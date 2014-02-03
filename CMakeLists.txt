@@ -1,52 +1,73 @@
-cmake_minimum_required(VERSION 2.8)
-
-project(obs)
-
-set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} ${CMAKE_CURRENT_SOURCE_DIR}/cmake)
-
-if(NOT CMAKE_BUILD_TYPE)
-	set(CMAKE_BUILD_TYPE RelWithDebInfo)
+if(WIN32 OR APPLE)
+	cmake_minimum_required(VERSION 2.8.12)
+else()
+	cmake_minimum_required(VERSION 2.8.11)
 endif()
 
-set(CMAKE_COMPILER_IS_CLANG ${CMAKE_CXX_COMPILER_ID} MATCHES "Clang")
+project(obs-studio)
 
-if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_COMPILER_IS_CLANG)
+set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake/Modules/")
+
+include(ObsHelpers)
+include(ObsCpack)
+
+add_definitions(-DOBS_VERSION="${OBS_VERSION}")
+
+if(MSVC AND NOT EXISTS "${CMAKE_BINARY_DIR}/ALL_BUILD.vcxproj.user")
+	file(GENERATE
+		OUTPUT "${CMAKE_BINARY_DIR}/ALL_BUILD.vcxproj.user"
+		INPUT "${CMAKE_SOURCE_DIR}/cmake/ALL_BUILD.vcxproj.user.in")
+endif()
+
+if(NOT CMAKE_BUILD_TYPE)
+        set(CMAKE_BUILD_TYPE RelWithDebInfo)
+endif()
+
+find_package(CXX11 REQUIRED)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CXX11_FLAGS}")
+
+if(${CMAKE_C_COMPILER_ID} MATCHES "Clang" OR ${CMAKE_CXX_COMPILER_ID} MATCHES "Clang")
+	set(CMAKE_COMPILER_IS_CLANG TRUE)
+endif()
+
+if(CMAKE_COMPILER_IS_GNUCC OR CMAKE_COMPILER_IS_GNUCXX OR CMAKE_COMPILER_IS_CLANG)
+	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-unused-function -Wno-unused-parameter -Wall -Wextra")
+	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=gnu99 -Wno-unused-function -Wno-unused-parameter -Wall -Wextra")
+	
 	option(USE_LIBC++ "Use libc++ instead of libstdc++" ${APPLE})
 	if(USE_LIBC++)
 		set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -stdlib=libc++")
 	endif()
-	set(CMAKE_CXX_FLAGS
-		"${CMAKE_CXX_FLAGS} -std=c++11 -Wall -Wmissing-prototypes")
-	set(CMAKE_C_FLAGS
-		"${CMAKE_C_FLAGS} -std=c99 -Wall -Wmissing-prototypes -Wshadow")
 endif()
 
-if(UNIX)
-	if(APPLE)
-		set(CMAKE_MACOSX_RPATH TRUE)
-		set(CMAKE_INSTALL_RPATH
-			"${CMAKE_INSTALL_RPATH};@loader_path/;@executable_path/")
-		option(BUILD_APP_BUNDLE "Build app bundle" false)
-	endif()
-	set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
-endif()
-
-include(obs_helpers)
-
-obs_add_data_dir(/)
-
-set(LIBRARY_OUTPUT_PATH ${obs_BINARY_DIR}/bin)
-set(RUNTIME_OUTPUT_PATH ${obs_BINARY_DIR}/bin)
-set(EXECUTABLE_OUTPUT_PATH ${obs_BINARY_DIR}/bin)
-add_subdirectory(libobs)
-add_subdirectory(libobs-opengl)
 if(WIN32)
-	add_subdirectory(libobs-d3d11)
-	add_subdirectory(libobs-d3d9)
+	add_definitions(-DUNICODE -D_UNICODE)
 endif()
 
-set(LIBRARY_OUTPUT_PATH ${obs_BINARY_DIR}/plugins)
-set(RUNTIME_OUTPUT_PATH ${obs_BINARY_DIR}/plugins)
-add_subdirectory(obs)
+if(APPLE)
+	set(CMAKE_MACOSX_RPATH TRUE)
+	set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
+	list(APPEND CMAKE_INSTALL_RPATH "@loader_path/" "@executable_path/")
+elseif(UNIX AND NOT UNIX_STRUCTURE)
+	set(CMAKE_BUILD_WITH_INSTALL_RPATH TRUE)
+	list(APPEND CMAKE_INSTALL_RPATH "$ORIGIN")
+endif()
 
-add_subdirectory(test)
+if(NOT INSTALLER_RUN)
+	add_subdirectory(deps)
+	add_subdirectory(libobs)
+
+	if(WIN32)
+		add_subdirectory(libobs-d3d11)
+		add_subdirectory(libobs-d3d9)
+	endif()
+
+	add_subdirectory(libobs-opengl)
+	add_subdirectory(obs)
+	add_subdirectory(plugins)
+	add_subdirectory(test)
+else()
+	obs_generate_multiarch_installer()
+endif()
+
+obs_install_additional()

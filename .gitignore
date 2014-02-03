@@ -10,6 +10,8 @@ Release/
 Debug/
 x64/
 ipch/
+GeneratedFiles/
+.moc/
 
 */bin/obs
 */bin/test
@@ -39,6 +41,12 @@ compile
 libtool
 ltmain.sh
 
+*.dmg
+*.json
+*.app
+.DS_Store
+
+.hg
 .depend
 tags
 *.trace
@@ -58,6 +66,7 @@ tags
 *.ncb
 *.user
 *.lo
+*.ilk
 *.la
 *.o
 *.obj
@@ -69,6 +78,9 @@ tags
 *.lnk
 *.chm
 *~
+.DS_Store
+*/.DS_Store
+*/**/.DS_Store
 
 *.o.d
 *.ninja
@@ -76,10 +88,7 @@ tags
 .dirstamp
 
 #cmake
-cmake_install.cmake
-CMakeCache.txt
-CMakeFiles/
-CMakeScripts/
+cmbuild/
 
 #xcode
 *.xcodeproj/

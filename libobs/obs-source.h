@@ -21,7 +21,6 @@
 #include "util/darray.h"
 #include "util/dstr.h"
 #include "util/threading.h"
-#include "media-io/media-io.h"
 #include "media-io/audio-resampler.h"
 #include "callback/signal.h"
 #include "callback/proc.h"
@@ -36,27 +35,44 @@
  *   A module with sources needs to export these functions:
  *       + enum_[type]
  *
+ *   [type] can be one of the following:
+ *       + input
+ *       + filter
+ *       + transition
+ *
+ *        input: A source used for directly playing video and/or sound.
+ *       filter: A source that is used for filtering other sources, modifying
+ *               the audio/video data before it is actually played.
+ *   transition: A source used for transitioning between two different sources
+ *               on screen.
+ *
  *   Each individual source is then exported by it's name.  For example, a
  * source named "mysource" would have the following exports:
  *       + mysource_getname
  *       + mysource_create
  *       + mysource_destroy
- *       + mysource_getflags
+ *       + mysource_get_output_flags
  *
  *       [and optionally]
+ *       + mysource_properties
  *       + mysource_update
- *       + mysource_config
+ *       + mysource_activate
+ *       + mysource_deactivate
  *       + mysource_video_tick
  *       + mysource_video_render
+ *       + mysource_getwidth
+ *       + mysource_getheight
  *       + mysource_getparam
  *       + mysource_setparam
+ *       + mysource_filtervideo
+ *       + mysource_filteraudio
  *
  * ===========================================
  *   Primary Exports
  * ===========================================
- *   const bool enum_[type](size_t idx, const char **name);
- *       idx: index of the source.
- *       type: pointer to variable that receives the type of the source
+ *   bool enum_[type](size_t idx, const char **name);
+ *       idx: index of the enumeration.
+ *       name: pointer to variable that receives the type of the source
  *       Return value: false when no more available.
  *
  * ===========================================
@@ -66,7 +82,7 @@
  *       Returns the full name of the source type (seen by the user).
  *
  * ---------------------------------------------------------
- *   void *[name]_create(const char *settings, obs_source_t source);
+ *   void *[name]_create(obs_data_t settings, obs_source_t source);
  *       Creates a source.
  *
  *       settings: Settings of the source.
@@ -78,29 +94,23 @@
  *       Destroys the source.
  *
  * ---------------------------------------------------------
- *   uint32_t [name]_getflags(void *data);
+ *   uint32_t [name]_get_output_flags(void *data);
  *       Returns a combination of one of the following values:
  *           + SOURCE_VIDEO: source has video
  *           + SOURCE_AUDIO: source has audio
- *           + SOURCE_ASYNC: video is sent asynchronously via RAM
- *
- * ---------------------------------------------------------
- *   uint32_t [name]_getwidth(void *data);
- *       Returns the width of a source, or -1 for maximum width.  If you render
- *       video, this is required.
- *
- * ---------------------------------------------------------
- *   uint32_t [name]_getheight(void *data);
- *       Returns the height of a source, or -1 for maximum height.  If you
- *       render video, this is required.
+ *           + SOURCE_ASYNC_VIDEO: video is sent asynchronously via RAM
+ *           + SOURCE_DEFAULT_EFFECT: source uses default effect
+ *           + SOURCE_YUV: source is in YUV color space
  *
  * ===========================================
  *   Optional Source Exports
  * ===========================================
- *   void [name]_config(void *data, void *parent);
- *       Called to configure the source.
+ *   obs_properties_t [name]_properties(const char *locale);
+ *       Returns the properties of this particular source type, if any.
  *
- *       parent: Parent window pointer
+ * ---------------------------------------------------------
+ *   void [name]_update(void *data, obs_data_t settings);
+ *       Called to update the settings of the source.
  *
  * ---------------------------------------------------------
  *   void [name]_video_activate(void *data);
@@ -118,6 +128,16 @@
  * ---------------------------------------------------------
  *   void [name]_video_render(void *data);
  *       Called to render the source.
+ *
+ * ---------------------------------------------------------
+ *   uint32_t [name]_getwidth(void *data);
+ *       Returns the width of a source, or -1 for maximum width.  If you render
+ *       video, this is required.
+ *
+ * ---------------------------------------------------------
+ *   uint32_t [name]_getheight(void *data);
+ *       Returns the height of a source, or -1 for maximum height.  If you
+ *       render video, this is required.
  *
  * ---------------------------------------------------------
  *   void [name]_getparam(void *data, const char *param, void *buf,
@@ -162,7 +182,7 @@ struct source_info {
 
 	const char *(*getname)(const char *locale);
 
-	void *(*create)(const char *settings, obs_source_t source);
+	void *(*create)(obs_data_t settings, obs_source_t source);
 	void (*destroy)(void *data);
 
 	uint32_t (*get_output_flags)(void *data);
@@ -170,7 +190,9 @@ struct source_info {
 	/* ----------------------------------------------------------------- */
 	/* optional implementations */
 
-	bool (*config)(void *data, void *parent);
+	obs_properties_t (*properties)(const char *locale);
+
+	void (*update)(void *data, obs_data_t settings);
 
 	void (*activate)(void *data);
 	void (*deactivate)(void *data);
@@ -180,27 +202,11 @@ struct source_info {
 	uint32_t (*getwidth)(void *data);
 	uint32_t (*getheight)(void *data);
 
-	size_t (*getparam)(void *data, const char *param, void *data_out,
-			size_t buf_size);
-	void (*setparam)(void *data, const char *param, const void *data_in,
-			size_t size);
-
 	struct source_frame *(*filter_video)(void *data,
 			const struct source_frame *frame);
 	struct filtered_audio *(*filter_audio)(void *data,
 			struct filtered_audio *audio);
 };
-
-struct audiobuf {
-	void     *data;
-	uint32_t frames;
-	uint64_t timestamp;
-};
-
-static inline void audiobuf_free(struct audiobuf *buf)
-{
-	bfree(buf->data);
-}
 
 struct obs_source {
 	volatile int                 refs;
@@ -208,7 +214,7 @@ struct obs_source {
 	/* source-specific data */
 	char                         *name; /* user-defined name */
 	enum obs_source_type         type;
-	struct dstr                  settings;
+	obs_data_t                   settings;
 	void                         *data;
 	struct source_info           callbacks;
 
@@ -221,9 +227,11 @@ struct obs_source {
 	bool                         removed;
 
 	/* timing (if video is present, is based upon video) */
-	bool                         timing_set;
-	uint64_t                     timing_adjust;
-	uint64_t                     last_frame_timestamp;
+	volatile bool                timing_set;
+	volatile uint64_t            timing_adjust;
+	volatile int                 audio_reset_ref;
+	uint64_t                     next_audio_ts_min;
+	uint64_t                     last_frame_ts;
 	uint64_t                     last_sys_timestamp;
 
 	/* audio */
@@ -231,10 +239,10 @@ struct obs_source {
 	struct resample_info         sample_info;
 	audio_resampler_t            resampler;
 	audio_line_t                 audio_line;
-	DARRAY(struct audiobuf)      audio_wait_buffer; /* pending data */
 	pthread_mutex_t              audio_mutex;
 	struct filtered_audio        audio_data;
 	size_t                       audio_storage_size;
+	float                        volume;
 
 	/* async video data */
 	texture_t                    output_texture;
@@ -252,7 +260,8 @@ struct obs_source {
 extern bool load_source_info(void *module, const char *module_name,
 		const char *source_name, struct source_info *info);
 
-extern bool obs_source_init(struct obs_source *source, const char *settings,
+bool obs_source_init_handlers(struct obs_source *source);
+extern bool obs_source_init(struct obs_source *source,
 		const struct source_info *info);
 
 extern void obs_source_activate(obs_source_t source);

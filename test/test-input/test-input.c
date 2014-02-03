@@ -1,7 +1,14 @@
 #include <obs.h>
 #include "test-input-exports.h"
 
-const char *inputs[] = {"random"};
+const char *inputs[] = {
+#ifdef __APPLE__
+	"osx_desktop_test",
+#endif
+	"random",
+	"sinewave"
+};
+
 const char *filters[] = {"test"};
 
 uint32_t module_version(uint32_t in_version)

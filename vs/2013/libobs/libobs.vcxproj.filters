@@ -66,9 +66,6 @@
     <ClInclude Include="..\..\..\libobs\obs-defs.h">
       <Filter>libobs\Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="..\..\..\libobs\obs-data.h">
-      <Filter>libobs\Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="..\..\..\libobs\obs.h">
       <Filter>libobs\Header Files</Filter>
     </ClInclude>
@@ -85,9 +82,6 @@
       <Filter>libobs\Header Files</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\libobs\media-io\audio-io.h">
-      <Filter>media-io\Header Files</Filter>
-    </ClInclude>
-    <ClInclude Include="..\..\..\libobs\media-io\media-io.h">
       <Filter>media-io\Header Files</Filter>
     </ClInclude>
     <ClInclude Include="..\..\..\libobs\media-io\video-io.h">
@@ -201,6 +195,18 @@
     <ClInclude Include="..\..\..\libobs\callback\signal.h">
       <Filter>callback\Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="..\..\..\libobs\obs-encoder.h">
+      <Filter>libobs\Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\libobs\obs-internal.h">
+      <Filter>libobs\Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\libobs\obs-data.h">
+      <Filter>libobs\Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\..\..\libobs\obs-properties.h">
+      <Filter>libobs\Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="..\..\..\libobs\obs-output.c">
@@ -225,9 +231,6 @@
       <Filter>media-io\Source Files</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\libobs\media-io\audio-io.c">
-      <Filter>media-io\Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="..\..\..\libobs\media-io\media-io.c">
       <Filter>media-io\Source Files</Filter>
     </ClCompile>
     <ClCompile Include="..\..\..\libobs\util\config-file.c">
@@ -331,6 +334,15 @@
     </ClCompile>
     <ClCompile Include="..\..\..\libobs\callback\proc.c">
       <Filter>callback\Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\libobs\obs-encoder.c">
+      <Filter>libobs\Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\libobs\obs-data.c">
+      <Filter>libobs\Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\..\..\libobs\obs-properties.c">
+      <Filter>libobs\Source Files</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

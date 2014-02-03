@@ -22,52 +22,30 @@
 #include "graphics/vec3.h"
 
 #include "obs.h"
-#include "obs-data.h"
+#include "obs-internal.h"
 
 static void obs_source_destroy(obs_source_t source);
 
 bool load_source_info(void *module, const char *module_name,
-		const char *source_id, struct source_info *info)
+		const char *id, struct source_info *info)
 {
-	info->getname = load_module_subfunc(module, module_name,
-			source_id, "getname", true);
-	info->create = load_module_subfunc(module, module_name,
-			source_id,"create", true);
-	info->destroy = load_module_subfunc(module, module_name,
-			source_id, "destroy", true);
-	info->get_output_flags = load_module_subfunc(module, module_name,
-			source_id, "get_output_flags", true);
+	LOAD_MODULE_SUBFUNC(getname, true);
+	LOAD_MODULE_SUBFUNC(create, true);
+	LOAD_MODULE_SUBFUNC(destroy, true);
+	LOAD_MODULE_SUBFUNC(get_output_flags, true);
 
-	if (!info->getname || !info->create || !info->destroy ||
-	    !info->get_output_flags)
-		return false;
+	LOAD_MODULE_SUBFUNC(properties, false);
+	LOAD_MODULE_SUBFUNC(update, false);
+	LOAD_MODULE_SUBFUNC(activate, false);
+	LOAD_MODULE_SUBFUNC(deactivate, false);
+	LOAD_MODULE_SUBFUNC(video_tick, false);
+	LOAD_MODULE_SUBFUNC(video_render, false);
+	LOAD_MODULE_SUBFUNC(getwidth, false);
+	LOAD_MODULE_SUBFUNC(getheight, false);
+	LOAD_MODULE_SUBFUNC(filter_video, false);
+	LOAD_MODULE_SUBFUNC(filter_audio, false);
 
-	info->config = load_module_subfunc(module, module_name,
-			source_id, "config", false);
-	info->activate = load_module_subfunc(module, module_name,
-			source_id, "activate", false);
-	info->deactivate = load_module_subfunc(module, module_name,
-			source_id, "deactivate", false);
-	info->video_tick = load_module_subfunc(module, module_name,
-			source_id, "video_tick", false);
-	info->video_render = load_module_subfunc(module, module_name,
-			source_id, "video_render", false);
-	info->getwidth = load_module_subfunc(module, module_name,
-			source_id, "getwidth", false);
-	info->getheight = load_module_subfunc(module, module_name,
-			source_id, "getheight", false);
-
-	info->getparam = load_module_subfunc(module, module_name,
-			source_id, "getparam", false);
-	info->setparam = load_module_subfunc(module, module_name,
-			source_id, "setparam", false);
-
-	info->filter_video = load_module_subfunc(module, module_name,
-			source_id, "filter_video", false);
-	info->filter_audio = load_module_subfunc(module, module_name,
-			source_id, "filter_audio", false);
-
-	info->id = source_id;
+	info->id = id;
 	return true;
 }
 
@@ -104,7 +82,7 @@ static const struct source_info *get_source_info(enum obs_source_type type,
 	return find_source(list, id);
 }
 
-static inline bool obs_source_init_handlers(struct obs_source *source)
+bool obs_source_init_handlers(struct obs_source *source)
 {
 	source->signals = signal_handler_create();
 	if (!source->signals)
@@ -122,16 +100,16 @@ const char *obs_source_getdisplayname(enum obs_source_type type,
 }
 
 /* internal initialization */
-bool obs_source_init(struct obs_source *source, const char *settings,
-		const struct source_info *info)
+bool obs_source_init(struct obs_source *source, const struct source_info *info)
 {
 	uint32_t flags = info->get_output_flags(source->data);
 
 	source->refs = 1;
+	source->volume = 1.0f;
 	pthread_mutex_init_value(&source->filter_mutex);
 	pthread_mutex_init_value(&source->video_mutex);
 	pthread_mutex_init_value(&source->audio_mutex);
-	dstr_copy(&source->settings, settings);
+
 	memcpy(&source->callbacks, info, sizeof(struct source_info));
 
 	if (pthread_mutex_init(&source->filter_mutex, NULL) != 0)
@@ -142,10 +120,11 @@ bool obs_source_init(struct obs_source *source, const char *settings,
 		return false;
 
 	if (flags & SOURCE_AUDIO) {
-		source->audio_line = audio_output_createline(obs->audio.audio);
+		source->audio_line = audio_output_createline(obs->audio.audio,
+				source->name);
 		if (!source->audio_line) {
 			blog(LOG_ERROR, "Failed to create audio line for "
-			                "source");
+			                "source '%s'", source->name);
 			return false;
 		}
 	}
@@ -165,7 +144,7 @@ static inline void obs_source_dosignal(struct obs_source *source,
 }
 
 obs_source_t obs_source_create(enum obs_source_type type, const char *id,
-		const char *name, const char *settings)
+		const char *name, obs_data_t settings)
 {
 	struct obs_source *source;
 
@@ -181,13 +160,15 @@ obs_source_t obs_source_create(enum obs_source_type type, const char *id,
 	if (!obs_source_init_handlers(source))
 		goto fail;
 
-	source->name = bstrdup(name);
-	source->type = type;
-	source->data = info->create(settings, source);
+	source->name     = bstrdup(name);
+	source->type     = type;
+	source->settings = obs_data_newref(settings);
+	source->data     = info->create(source->settings, source);
+
 	if (!source->data)
 		goto fail;
 
-	if (!obs_source_init(source, settings, info))
+	if (!obs_source_init(source, info))
 		goto fail;
 
 	obs_source_dosignal(source, "source-create");
@@ -211,8 +192,6 @@ static void obs_source_destroy(obs_source_t source)
 	for (i = 0; i < source->filters.num; i++)
 		obs_source_release(source->filters.array[i]);
 
-	for (i = 0; i < source->audio_wait_buffer.num; i++)
-		audiobuf_free(source->audio_wait_buffer.array+i);
 	for (i = 0; i < source->video_frames.num; i++)
 		source_frame_destroy(source->video_frames.array[i]);
 
@@ -231,48 +210,43 @@ static void obs_source_destroy(obs_source_t source)
 	signal_handler_destroy(source->signals);
 
 	da_free(source->video_frames);
-	da_free(source->audio_wait_buffer);
 	da_free(source->filters);
 	pthread_mutex_destroy(&source->filter_mutex);
 	pthread_mutex_destroy(&source->audio_mutex);
 	pthread_mutex_destroy(&source->video_mutex);
-	dstr_free(&source->settings);
+	obs_data_release(source->settings);
 	bfree(source->name);
 	bfree(source);
 }
 
-int obs_source_addref(obs_source_t source)
+void obs_source_addref(obs_source_t source)
 {
-	assert(source != NULL);
-	if (!source)
-		return 0;
-
-	return ++source->refs;
+	if (source)
+		++source->refs;
 }
 
-int obs_source_release(obs_source_t source)
+void obs_source_release(obs_source_t source)
 {
-	int refs;
-
-	assert(source != NULL);
 	if (!source)
-		return 0;
+		return;
 
-	refs = --source->refs;
-	if (refs == 0)
+	if (--source->refs == 0)
 		obs_source_destroy(source);
-
-	return refs;
 }
 
 void obs_source_remove(obs_source_t source)
 {
-	struct obs_data *data = &obs->data;
+	struct obs_program_data *data = &obs->data;
 	size_t id;
+
+	pthread_mutex_lock(&data->sources_mutex);
+
+	if (!source || source->removed)
+		return;
 
 	source->removed = true;
 
-	pthread_mutex_lock(&data->sources_mutex);
+	obs_source_addref(source);
 
 	id = da_find(data->sources, &source, 0);
 	if (id != DARRAY_INVALID) {
@@ -281,6 +255,9 @@ void obs_source_remove(obs_source_t source)
 	}
 
 	pthread_mutex_unlock(&data->sources_mutex);
+
+	obs_source_dosignal(source, "source-remove");
+	obs_source_release(source);
 }
 
 bool obs_source_removed(obs_source_t source)
@@ -288,20 +265,26 @@ bool obs_source_removed(obs_source_t source)
 	return source->removed;
 }
 
+obs_properties_t obs_source_properties(enum obs_source_type type,
+		const char *id, const char *locale)
+{
+	const struct source_info *info = get_source_info(type, id);
+	if (info && info->properties)
+	       return info->properties(locale);
+	return NULL;
+}
+
 uint32_t obs_source_get_output_flags(obs_source_t source)
 {
 	return source->callbacks.get_output_flags(source->data);
 }
 
-bool obs_source_hasconfig(obs_source_t source)
+void obs_source_update(obs_source_t source, obs_data_t settings)
 {
-	return source->callbacks.config != NULL;
-}
+	obs_data_replace(&source->settings, settings);
 
-void obs_source_config(obs_source_t source, void *parent)
-{
-	if (source->callbacks.config)
-		source->callbacks.config(source->data, parent);
+	if (source->callbacks.update)
+		source->callbacks.update(source->data, source->settings);
 }
 
 void obs_source_activate(obs_source_t source)
@@ -322,56 +305,74 @@ void obs_source_video_tick(obs_source_t source, float seconds)
 		source->callbacks.video_tick(source->data, seconds);
 }
 
+static inline uint64_t conv_frames_to_time(obs_source_t source, size_t frames)
+{
+	const struct audio_output_info *info;
+	double sps_to_ns;
+
+	info = audio_output_getinfo(obs->audio.audio);
+	sps_to_ns = 1000000000.0 / (double)info->samples_per_sec;
+	return (uint64_t)((double)frames * sps_to_ns);
+}
+
 /* maximum "direct" timestamp variance in nanoseconds */
-#define MAX_VARIANCE 2000000000ULL
+#define MAX_TS_VAR         5000000000ULL
+/* maximum time that timestamp can jump in nanoseconds */
+#define MAX_TIMESTAMP_JUMP 2000000000ULL
+
+static inline void reset_audio_timing(obs_source_t source, uint64_t timetamp)
+{
+	source->timing_set    = true;
+	source->timing_adjust = os_gettime_ns() - timetamp;
+}
+
+static inline void handle_ts_jump(obs_source_t source, uint64_t ts,
+		uint64_t diff)
+{
+	uint32_t flags = source->callbacks.get_output_flags(source->data);
+
+	blog(LOG_DEBUG, "Timestamp for source '%s' jumped by '%lld', "
+	                "resetting audio timing", source->name, diff);
+
+	/* if has video, ignore audio data until reset */
+	if (flags & SOURCE_ASYNC_VIDEO)
+		source->audio_reset_ref--;
+	else 
+		reset_audio_timing(source, ts);
+}
 
 static void source_output_audio_line(obs_source_t source,
 		const struct audio_data *data)
 {
 	struct audio_data in = *data;
-
-	if (!in.timestamp) {
-		in.timestamp = os_gettime_ns();
-		if (!source->timing_set) {
-			source->timing_set    = true;
-			source->timing_adjust = 0;
-		}
-	}
+	uint64_t diff;
 
 	if (!source->timing_set) {
-		source->timing_set    = true;
-		source->timing_adjust = in.timestamp - os_gettime_ns();
+		reset_audio_timing(source, in.timestamp);
 
 		/* detects 'directly' set timestamps as long as they're within
 		 * a certain threshold */
-		if ((source->timing_adjust+MAX_VARIANCE) < MAX_VARIANCE*2)
+		if ((source->timing_adjust + MAX_TS_VAR) < MAX_TS_VAR * 2)
 			source->timing_adjust = 0;
+
+	} else {
+		diff = in.timestamp - source->next_audio_ts_min;
+
+		/* don't need signed because negative will trigger it
+		 * regardless, which is what we want */
+		if (diff > MAX_TIMESTAMP_JUMP)
+			handle_ts_jump(source, in.timestamp, diff);
 	}
+
+	source->next_audio_ts_min = in.timestamp +
+		conv_frames_to_time(source, in.frames);
+
+	if (source->audio_reset_ref != 0)
+		return;
 
 	in.timestamp += source->timing_adjust;
+	in.volume = source->volume;
 	audio_line_output(source->audio_line, &in);
-}
-
-static void obs_source_flush_audio_wait_buffer(obs_source_t source)
-{
-	size_t i;
-
-	pthread_mutex_lock(&source->audio_mutex);
-	source->timing_set = true;
-
-	for (i = 0; i < source->audio_wait_buffer.num; i++) {
-		struct audiobuf *buf = source->audio_wait_buffer.array+i;
-		struct audio_data data;
-
-		data.data      = buf->data;
-		data.frames    = buf->frames;
-		data.timestamp = buf->timestamp + source->timing_adjust;
-		audio_line_output(source->audio_line, &data);
-		audiobuf_free(buf);
-	}
-
-	da_free(source->audio_wait_buffer);
-	pthread_mutex_unlock(&source->audio_mutex);
 }
 
 static bool set_texture_size(obs_source_t source, struct source_frame *frame)
@@ -413,7 +414,7 @@ static inline enum convert_type get_convert_type(enum video_format format)
 	case VIDEO_FORMAT_UYVY:
 		return CONVERT_422_U;
 
-	case VIDEO_FORMAT_UNKNOWN:
+	case VIDEO_FORMAT_NONE:
 	case VIDEO_FORMAT_YUVX:
 	case VIDEO_FORMAT_UYVX:
 	case VIDEO_FORMAT_RGBA:
@@ -436,7 +437,7 @@ static inline bool is_yuv(enum video_format format)
 	case VIDEO_FORMAT_YUVX:
 	case VIDEO_FORMAT_UYVX:
 		return true;
-	case VIDEO_FORMAT_UNKNOWN:
+	case VIDEO_FORMAT_NONE:
 	case VIDEO_FORMAT_RGBA:
 	case VIDEO_FORMAT_BGRA:
 	case VIDEO_FORMAT_BGRX:
@@ -516,10 +517,6 @@ static void obs_source_render_async_video(obs_source_t source)
 	if (!frame)
 		return;
 
-	source->timing_adjust = frame->timestamp - os_gettime_ns();
-	if (!source->timing_set && source->audio_wait_buffer.num)
-		obs_source_flush_audio_wait_buffer(source);
-
 	if (set_texture_size(source, frame))
 		obs_source_draw_texture(source->output_texture, frame);
 
@@ -590,22 +587,6 @@ uint32_t obs_source_getheight(obs_source_t source)
 	if (source->callbacks.getheight)
 		return source->callbacks.getheight(source->data);
 	return 0;
-}
-
-size_t obs_source_getparam(obs_source_t source, const char *param, void *buf,
-		size_t buf_size)
-{
-	if (source->callbacks.getparam)
-		return source->callbacks.getparam(source->data, param, buf,
-				buf_size);
-	return 0;
-}
-
-void obs_source_setparam(obs_source_t source, const char *param,
-		const void *data, size_t size)
-{
-	if (source->callbacks.setparam)
-		source->callbacks.setparam(source->data, param, data, size);
 }
 
 obs_source_t obs_filter_getparent(obs_source_t filter)
@@ -701,14 +682,10 @@ void obs_source_filter_setorder(obs_source_t source, obs_source_t filter,
 	}
 }
 
-const char *obs_source_getsettings(obs_source_t source)
+obs_data_t obs_source_getsettings(obs_source_t source)
 {
-	return source->settings.array;
-}
-
-void obs_source_savesettings(obs_source_t source, const char *settings)
-{
-	dstr_copy(&source->settings, settings);
+	obs_data_addref(source->settings);
+	return source->settings;
 }
 
 static inline struct source_frame *filter_async_video(obs_source_t source,
@@ -773,7 +750,7 @@ static inline struct filtered_audio *filter_async_audio(obs_source_t source,
 static inline void reset_resampler(obs_source_t source,
 		const struct source_audio *audio)
 {
-	const struct audio_info *obs_info;
+	const struct audio_output_info *obs_info;
 	struct resample_info output_info;
 
 	obs_info = audio_output_getinfo(obs->audio.audio);
@@ -864,18 +841,7 @@ void obs_source_output_audio(obs_source_t source,
 
 		/* wait for video to start before outputting any audio so we
 		 * have a base for sync */
-		if (!source->timing_set && flags & SOURCE_ASYNC_VIDEO) {
-			struct audiobuf newbuf;
-			size_t audio_size = blocksize * output->frames;
-
-			newbuf.data      = bmalloc(audio_size);
-			newbuf.frames    = output->frames;
-			newbuf.timestamp = output->timestamp;
-			memcpy(newbuf.data, output->data, audio_size);
-
-			da_push_back(source->audio_wait_buffer, &newbuf);
-
-		} else {
+		if (source->timing_set || (flags & SOURCE_ASYNC_VIDEO) == 0) {
 			struct audio_data data;
 			data.data      = output->data;
 			data.frames    = output->frames;
@@ -889,53 +855,88 @@ void obs_source_output_audio(obs_source_t source,
 	pthread_mutex_unlock(&source->filter_mutex);
 }
 
+static inline bool frame_out_of_bounds(obs_source_t source, uint64_t ts)
+{
+	return ((ts - source->last_frame_ts) > MAX_TIMESTAMP_JUMP);
+}
+
+static inline struct source_frame *get_closest_frame(obs_source_t source,
+		uint64_t sys_time, int *audio_time_refs)
+{
+	struct source_frame *next_frame = source->video_frames.array[0];
+	struct source_frame *frame      = NULL;
+	uint64_t sys_offset = sys_time - source->last_sys_timestamp;
+	uint64_t frame_time = next_frame->timestamp;
+	uint64_t frame_offset = 0;
+
+	/* account for timestamp invalidation */
+	if (frame_out_of_bounds(source, frame_time)) {
+		source->last_frame_ts = next_frame->timestamp;
+		(*audio_time_refs)++;
+	} else {
+		frame_offset = frame_time - source->last_frame_ts;
+		source->last_frame_ts += sys_offset;
+	}
+
+	while (frame_offset <= sys_offset) {
+		source_frame_destroy(frame);
+
+		frame = next_frame;
+		da_erase(source->video_frames, 0);
+
+		if (!source->video_frames.num)
+			break;
+
+		next_frame = source->video_frames.array[0];
+
+		/* more timestamp checking and compensating */
+		if ((next_frame->timestamp - frame_time) > MAX_TIMESTAMP_JUMP) {
+			source->last_frame_ts =
+				next_frame->timestamp - frame_offset;
+			(*audio_time_refs)++;
+		}
+
+		frame_time   = next_frame->timestamp;
+		frame_offset = frame_time - source->last_frame_ts;
+	}
+
+	return frame;
+}
+
 /*
  * Ensures that cached frames are displayed on time.  If multiple frames
  * were cached between renders, then releases the unnecessary frames and uses
- * the frame with the closest timing to ensure sync.
+ * the frame with the closest timing to ensure sync.  Also ensures that timing
+ * with audio is synchronized.
  */
 struct source_frame *obs_source_getframe(obs_source_t source)
 {
-	uint64_t last_frame_time = source->last_frame_timestamp;
-	struct   source_frame *frame = NULL;
-	struct   source_frame *next_frame;
-	uint64_t sys_time, frame_time;
+	struct source_frame *frame = NULL;
+	uint64_t last_frame_time = source->last_frame_ts;
+	int      audio_time_refs = 0;
+	uint64_t sys_time;
 
 	pthread_mutex_lock(&source->video_mutex);
 
 	if (!source->video_frames.num)
 		goto unlock;
 
-	next_frame = source->video_frames.array[0];
-	sys_time   = os_gettime_ns();
-	frame_time = next_frame->timestamp;
+	sys_time = os_gettime_ns();
 
-	if (!source->last_frame_timestamp) {
-		frame = next_frame;
+	if (!source->last_frame_ts) {
+		frame = source->video_frames.array[0];
 		da_erase(source->video_frames, 0);
 
-		source->last_frame_timestamp = frame_time;
+		source->last_frame_ts = frame->timestamp;
 	} else {
-		uint64_t sys_offset, frame_offset;
-		sys_offset   = sys_time   - source->last_sys_timestamp;
-		frame_offset = frame_time - last_frame_time;
+		frame = get_closest_frame(source, sys_time, &audio_time_refs);
+	}
 
-		source->last_frame_timestamp += sys_offset;
-
-		while (frame_offset <= sys_offset) {
-			if (frame)
-				source_frame_destroy(frame);
-
-			frame = next_frame;
-			da_erase(source->video_frames, 0);
-
-			if (!source->video_frames.num)
-				break;
-
-			next_frame   = source->video_frames.array[0];
-			frame_time   = next_frame->timestamp;
-			frame_offset = frame_time - last_frame_time;
-		}
+	/* reset timing to current system time */
+	if (frame) {
+		source->audio_reset_ref += audio_time_refs;
+		source->timing_adjust = sys_time - frame->timestamp;
+		source->timing_set = true;
 	}
 
 	source->last_sys_timestamp = sys_time;
@@ -943,7 +944,7 @@ struct source_frame *obs_source_getframe(obs_source_t source)
 unlock:
 	pthread_mutex_unlock(&source->video_mutex);
 
-	if (frame != NULL)
+	if (frame)
 		obs_source_addref(source);
 
 	return frame;
@@ -1057,4 +1058,14 @@ signal_handler_t obs_source_signalhandler(obs_source_t source)
 proc_handler_t obs_source_prochandler(obs_source_t source)
 {
 	return source->procs;
+}
+
+void obs_source_setvolume(obs_source_t source, float volume)
+{
+	source->volume = volume;
+}
+
+float obs_source_getvolume(obs_source_t source)
+{
+	return source->volume;
 }

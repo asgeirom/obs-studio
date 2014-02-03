@@ -19,7 +19,7 @@
 #include "util/dstr.h"
 
 #include "obs-defs.h"
-#include "obs-data.h"
+#include "obs-internal.h"
 #include "obs-module.h"
 
 void *load_module_subfunc(void *module, const char *module_name,
@@ -74,6 +74,30 @@ static void module_load_exports(struct obs_module *mod,
 
 complete:
 	dstr_free(&enum_name);
+}
+
+static void module_load_modal_ui_exports(struct obs_module *mod)
+{
+	bool (*enum_func)(size_t idx, struct obs_modal_ui *info);
+	struct obs_modal_ui ui_info;
+	size_t i = 0;
+
+	enum_func = os_dlsym(mod->module, "enum_modal_ui");
+	if (enum_func)
+		while (enum_func(i++, &ui_info))
+			da_push_back(obs->ui_modal_callbacks, &ui_info);
+}
+
+static void module_load_modeless_ui_exports(struct obs_module *mod)
+{
+	bool (*enum_func)(size_t idx, struct obs_modeless_ui *info);
+	struct obs_modeless_ui ui_info;
+	size_t i = 0;
+
+	enum_func = os_dlsym(mod->module, "enum_modeless_ui");
+	if (enum_func)
+		while (enum_func(i++, &ui_info))
+			da_push_back(obs->ui_modeless_callbacks, &ui_info);
 }
 
 extern char *find_plugin(const char *plugin);
@@ -154,6 +178,11 @@ int obs_load_module(const char *path)
 			sizeof(struct source_info), load_source_info);
 	module_load_exports(&mod, &obs->output_types.da, "outputs",
 			sizeof(struct output_info), load_output_info);
+	module_load_exports(&mod, &obs->encoder_types.da, "encoders",
+			sizeof(struct encoder_info), load_encoder_info);
+
+	module_load_modal_ui_exports(&mod);
+	module_load_modeless_ui_exports(&mod);
 
 	da_push_back(obs->modules, &mod);
 	return MODULE_SUCCESS;

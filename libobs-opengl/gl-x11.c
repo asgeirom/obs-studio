@@ -1,15 +1,28 @@
+/******************************************************************************
+    Copyright (C) 2014 by Zachary Lund <admin@computerquip.com>
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 2 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+******************************************************************************/
 #include <X11/Xlib.h>
 
 #include <stdio.h>
 
 #include "gl-subsystem.h"
 
-#include <GL/glx.h>
-#include <GL/glxext.h>
+#include "GL/glx_obs.h"
 	
-static PFNGLXCREATECONTEXTATTRIBSARBPROC glXCreateContextAttribsARB;
-	
-static const GLenum fb_attribs[] = {
+static const int fb_attribs[] = {
 	/* Hardcoded for now... */
 	GLX_STENCIL_SIZE, 8,
 	GLX_DEPTH_SIZE, 24, 
@@ -18,28 +31,13 @@ static const GLenum fb_attribs[] = {
 	None
 };
 
-static const GLenum ctx_attribs[] = {
-	GLX_CONTEXT_MAJOR_VERSION_ARB, 3,
-	GLX_CONTEXT_MINOR_VERSION_ARB, 2,
-	GLX_CONTEXT_FLAGS_ARB, GLX_CONTEXT_DEBUG_BIT_ARB |
-	                       GLX_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB,
+static const int ctx_attribs[] = {
+#ifdef _DEBUG
+	GLX_CONTEXT_FLAGS_ARB, GLX_CONTEXT_DEBUG_BIT_ARB,
+#endif
 	GLX_CONTEXT_PROFILE_MASK_ARB, GLX_CONTEXT_CORE_PROFILE_BIT_ARB,
-	0, 0
+	None, 
 };
-
-static const char* __GLX_error_table[] = {
-	"Success",
-	"Bad Screen",
-	"Bad Attribute",
-	"No Extension",
-	"Bad Visual",
-	"Bad Content",
-	"Bad Value",
-	"Bad Enumeration"
-};
-
-#define GET_GLX_ERROR(x) \
-	__GLX_error_table[x]
 
 struct gl_windowinfo {
 	uint32_t id;
@@ -50,12 +48,6 @@ struct gl_platform {
 	GLXContext context;
 	struct gs_swap_chain swap;
 };
-
-static int GLXErrorHandler(Display *disp, XErrorEvent *error)
-{
-	blog(LOG_ERROR, "GLX error: %s\n", GET_GLX_ERROR(error->error_code));
-	return 0;
-}
 
 extern struct gs_swap_chain *gl_platform_getswap(struct gl_platform *platform) 
 {
@@ -68,6 +60,12 @@ extern struct gl_windowinfo *gl_windowinfo_create(struct gs_init_data *info)
 	memset(wi, 0, sizeof(struct gl_windowinfo));
 	
 	wi->id = info->window.id;
+	/* wi->display = info->window.display; */
+
+	/*
+		The above no longer works with Qt. 
+		Let's hope it continues to work.	
+	 */
 	
 	return wi;
 }
@@ -106,23 +104,13 @@ static void print_info_stuff(struct gs_init_data *info)
 struct gl_platform *gl_platform_create(device_t device,
 		struct gs_init_data *info)
 {	
-	/* X11 */
 	int num_configs = 0;
 	int error_base = 0, event_base = 0;
 	Display *display = XOpenDisplay(NULL); /* Open default screen */
-	
-	/* OBS */
 	struct gl_platform *plat = bmalloc(sizeof(struct gl_platform));
-	
-	/* GLX */
 	GLXFBConfig* configs;
 	
 	print_info_stuff(info);
-	
-	if (!plat) { 
-		blog(LOG_ERROR, "Out of memory");
-		return NULL;
-	}
 	
 	memset(plat, 0, sizeof(struct gl_platform));
 	
@@ -131,16 +119,28 @@ struct gl_platform *gl_platform_create(device_t device,
 		goto fail0;
 	}
 	
-	
+	if (!glx_LoadFunctions(display, DefaultScreen(display))) {
+		blog(LOG_ERROR, "Unable to load GLX entry functions.");
+		goto fail0;
+	}
+
 	if (!glXQueryExtension(display, &error_base, &event_base)) {
 		blog(LOG_ERROR, "GLX not supported.");
 		goto fail0;
 	}
 	
-	XSetErrorHandler(GLXErrorHandler);
-	
-	glXCreateContextAttribsARB = (PFNGLXCREATECONTEXTATTRIBSARBPROC)glXGetProcAddress("glXCreateContextAttribsARB");
-	if (!glXCreateContextAttribsARB) {
+	/* We require glX version 1.4 */
+	{
+		int major = 0, minor = 0;
+		
+		glXQueryVersion(display, &major, &minor);
+		if (major < 1 || minor < 4) {
+			blog(LOG_ERROR, "GLX version found: %i.%i\nRequired: 1.4", major, minor);
+			goto fail0;
+		}
+	}
+
+	if (!glx_ext_ARB_create_context) {
 		blog(LOG_ERROR, "ARB_GLX_create_context not supported!");
 		goto fail0;
 	}
@@ -169,20 +169,12 @@ struct gl_platform *gl_platform_create(device_t device,
 		goto fail2;
 	}
 
-	blog(LOG_INFO, "OpenGL version: %s\n", glGetString(GL_VERSION));
-
-	/* Initialize GLEW */
-	{
-		GLenum err = glewInit();
-		if (GLEW_OK != err) {
-			blog(LOG_ERROR, glewGetErrorString(err));
-			goto fail2;
-		}
+	if (!ogl_LoadFunctions()) {
+		blog(LOG_ERROR, "Failed to load OpenGL entry functions.");
+		goto fail2;
 	}
 	
-	glEnable(GL_TEXTURE_CUBE_MAP_SEAMLESS);
-	glEnable(GL_DEBUG_OUTPUT);
-	glEnable(GL_CULL_FACE);
+	blog(LOG_INFO, "OpenGL version: %s\n", glGetString(GL_VERSION));
 	
 	plat->swap.device = device;
 	plat->swap.info	  = *info;
@@ -195,6 +187,7 @@ struct gl_platform *gl_platform_create(device_t device,
 	return plat;
 	
 fail2:
+	glXMakeCurrent(display, None, NULL);
 	glXDestroyContext(display, plat->context);
 fail1: 
 	XFree(configs);
@@ -203,7 +196,7 @@ fail0:
 	return NULL;
 }
 
-extern void gl_platform_destroy(struct gl_platform *platform) 
+void gl_platform_destroy(struct gl_platform *platform) 
 {
 	if (!platform)
 		return; 
@@ -236,6 +229,12 @@ void device_leavecontext(device_t device)
 		blog(LOG_ERROR, "Failed to reset current context.");
 	}
 }
+
+void gl_update(device_t device)
+{
+	/* I don't know of anything we can do here. */
+}
+
 void device_load_swapchain(device_t device, swapchain_t swap) 
 {
 	if(!swap)

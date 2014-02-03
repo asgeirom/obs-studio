@@ -15,7 +15,6 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 ******************************************************************************/
 
-#include <GL/glew.h>
 #include "gl-subsystem.h"
 #include <OpenGL/OpenGL.h>
 
@@ -97,45 +96,6 @@ static NSOpenGLContext *gl_context_create(struct gs_init_data *info)
 	return context;
 }
 
-static inline void required_extension_error(const char *extension)
-{
-	blog(LOG_ERROR, "OpenGL extension %s is required", extension);
-}
-
-static bool gl_init_extensions(device_t device)
-{
-	glewExperimental=true;
-	GLenum error = glewInit();
-	if(error != GLEW_OK) {
-	       blog(LOG_ERROR, "glewInit failed, %u\n%s\n", error,
-			       glewGetErrorString(error));
-	       return false;
-	}
-
-	if(!GLEW_VERSION_2_1) {
-	       blog(LOG_ERROR, "OpenGL 2.1 minimum required by the graphics "
-	                       "adapter");
-	       return false;
-	}
-
-	if(!GLEW_ARB_framebuffer_object) {
-		required_extension_error("GL_ARB_framebuffer_object");
-		return false;
-	}
-
-	if(!GLEW_ARB_separate_shader_objects) {
-		required_extension_error("GL_ARB_separate_shader_objects");
-		return false;
-	}
-
-	//something inside glew produces error code 1280 (invalid enum)
-	glGetError();
-
-	device->copy_type = COPY_TYPE_FBO_BLIT;
-
-	return true;
-}
-
 static bool gl_init_default_swap(struct gl_platform *plat, device_t dev,
 		struct gs_init_data *info)
 {
@@ -160,13 +120,8 @@ struct gl_platform *gl_platform_create(device_t device,
 
 	[plat->context makeCurrentContext];
 
-	if(!gl_init_extensions(device))
+	if (!ogl_LoadFunctions())
 		goto fail;
-
-	if (GLEW_ARB_seamless_cube_map) {
-		glEnable(GL_TEXTURE_CUBE_MAP_SEAMLESS);
-		gl_success("GL_TEXTURE_CUBE_MAP_SEAMLESS");
-	}
 
 	return plat;
 

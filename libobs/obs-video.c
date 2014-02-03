@@ -16,7 +16,7 @@
 ******************************************************************************/
 
 #include "obs.h"
-#include "obs-data.h"
+#include "obs-internal.h"
 #include "graphics/vec4.h"
 
 static void tick_sources(uint64_t cur_time, uint64_t *last_time)
@@ -56,7 +56,6 @@ static inline void render_begin(struct obs_display *display)
 
 	gs_ortho(0.0f, (float)width, 0.0f, (float)height, -100.0f, 100.0f);
 	gs_setviewport(0, 0, width, height);
-
 }
 
 static inline void render_end(struct obs_display *display)
@@ -92,6 +91,9 @@ static void render_display(struct obs_display *display)
 static inline void render_displays(void)
 {
 	size_t i;
+
+	if (!obs->data.valid)
+		return;
 
 	/* render extra displays/swaps */
 	pthread_mutex_lock(&obs->data.displays_mutex);

@@ -19,82 +19,54 @@
 
 #pragma once
 
-#include <string.h>
-#include <stdarg.h>
-
 #include "obs.h"
 
 /* RAII wrappers */
 
-class OBSSource {
-	obs_source_t source;
+template<typename T, void addref(T), void release(T)>
+class OBSRef {
+	T val;
 
-	OBSSource(OBSSource &&) = delete;
-	OBSSource(OBSSource const&) = delete;
-
-	OBSSource &operator=(OBSSource const&) = delete;
-
-public:
-	inline OBSSource(obs_source_t source) : source(source) {}
-	inline ~OBSSource() {obs_source_release(source);}
-
-	inline OBSSource& operator=(obs_source_t p) {source = p; return *this;}
-
-	inline operator obs_source_t() {return source;}
-
-	inline bool operator==(obs_source_t p) const {return source == p;}
-	inline bool operator!=(obs_source_t p) const {return source != p;}
-};
-
-class OBSSourceRef {
-	obs_source_t source;
-
-public:
-	inline OBSSourceRef(obs_source_t source) : source(source)
+	inline OBSRef &Replace(T valIn)
 	{
-		obs_source_addref(source);
-	}
-
-	inline OBSSourceRef(const OBSSourceRef &ref) : source(ref.source)
-	{
-		obs_source_addref(source);
-	}
-
-	inline OBSSourceRef(OBSSourceRef &&ref) : source(ref.source)
-	{
-		ref.source = NULL;
-	}
-
-	inline ~OBSSourceRef() {obs_source_release(source);}
-
-	inline OBSSourceRef &operator=(obs_source_t sourceIn)
-	{
-		obs_source_addref(sourceIn);
-		obs_source_release(source);
-		source = sourceIn;
+		addref(valIn);
+		release(val);
+		val = valIn;
 		return *this;
 	}
 
-	inline OBSSourceRef &operator=(const OBSSourceRef &ref)
-	{
-		obs_source_addref(ref.source);
-		obs_source_release(source);
-		source = ref.source;
-		return *this;
-	}
+public:
+	inline OBSRef() : val(nullptr)                  {}
+	inline OBSRef(T val_) : val(val_)               {addref(val);}
+	inline OBSRef(const OBSRef &ref) : val(ref.val) {addref(val);}
+	inline OBSRef(OBSRef &&ref) : val(ref.val)      {ref.val = nullptr;}
 
-	inline OBSSourceRef &operator=(OBSSourceRef &&ref)
+	inline ~OBSRef() {release(val);}
+
+	inline OBSRef &operator=(T valIn)           {return Replace(valIn);}
+	inline OBSRef &operator=(const OBSRef &ref) {return Replace(ref.val);}
+
+	inline OBSRef &operator=(OBSRef &&ref)
 	{
 		if (this != &ref) {
-			source = ref.source;
-			ref.source = NULL;
+			val = ref.val;
+			ref.val = nullptr;
 		}
 
 		return *this;
 	}
 
-	inline operator obs_source_t() const {return source;}
+	inline operator T() const {return val;}
 
-	inline bool operator==(obs_source_t p) const {return source == p;}
-	inline bool operator!=(obs_source_t p) const {return source != p;}
+	inline bool operator==(T p) const {return val == p;}
+	inline bool operator!=(T p) const {return val != p;}
 };
+
+using OBSSource = OBSRef<obs_source_t, obs_source_addref, obs_source_release>;
+using OBSScene = OBSRef<obs_scene_t, obs_scene_addref, obs_scene_release>;
+using OBSSceneItem = OBSRef<obs_sceneitem_t, obs_sceneitem_addref,
+						obs_sceneitem_release>;
+
+using OBSData = OBSRef<obs_data_t, obs_data_addref, obs_data_release>;
+using OBSDataArray = OBSRef<obs_data_array_t, obs_data_array_addref,
+						obs_data_array_release>;

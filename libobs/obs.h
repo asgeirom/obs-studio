@@ -21,11 +21,15 @@
 #include "util/bmem.h"
 #include "graphics/graphics.h"
 #include "graphics/vec2.h"
-#include "media-io/media-io.h"
+#include "media-io/audio-io.h"
+#include "media-io/video-io.h"
 #include "callback/signal.h"
 #include "callback/proc.h"
 
 #include "obs-defs.h"
+#include "obs-data.h"
+#include "obs-ui.h"
+#include "obs-properties.h"
 
 /*
  * Main libobs header used by applications.
@@ -47,11 +51,6 @@ enum obs_source_type {
 	SOURCE_FILTER,
 	SOURCE_TRANSITION,
 	SOURCE_SCENE
-};
-
-enum obs_video_type {
-	OBS_VIDEO_YUV,
-	OBS_VIDEO_RGB
 };
 
 /* used for changing the order of items (for example, filters in a source,
@@ -135,12 +134,29 @@ static inline void source_frame_destroy(struct source_frame *frame)
 	}
 }
 
+enum packet_priority {
+	PACKET_PRIORITY_DISPOSABLE,
+	PACKET_PRIORITY_LOW,
+	PACKET_PRIORITY_PFRAME,
+	PACKET_PRIORITY_IFRAME,
+	PACKET_PRIORITY_OTHER /* audio usually */
+};
+
+struct encoder_packet {
+	int64_t              dts;
+	int64_t              pts;
+	void                 *data;
+	size_t               size;
+	enum packet_priority priority;
+};
+
 /* opaque types */
 struct obs_display;
 struct obs_source;
 struct obs_scene;
 struct obs_scene_item;
 struct obs_output;
+struct obs_encoder;
 struct obs_service;
 
 typedef struct obs_display    *obs_display_t;
@@ -148,6 +164,7 @@ typedef struct obs_source     *obs_source_t;
 typedef struct obs_scene      *obs_scene_t;
 typedef struct obs_scene_item *obs_sceneitem_t;
 typedef struct obs_output     *obs_output_t;
+typedef struct obs_encoder    *obs_encoder_t;
 typedef struct obs_service    *obs_service_t;
 
 /* ------------------------------------------------------------------------- */
@@ -173,13 +190,13 @@ EXPORT bool obs_reset_video(struct obs_video_info *ovi);
  *
  *   NOTE: Cannot reset base audio if currently streaming/recording.
  */
-EXPORT bool obs_reset_audio(struct audio_info *ai);
+EXPORT bool obs_reset_audio(struct audio_output_info *ai);
 
 /** Gets the current video settings, returns false if none */
 EXPORT bool obs_get_video_info(struct obs_video_info *ovi);
 
 /** Gets the current audio settings, returns false if none */
-EXPORT bool obs_get_audio_info(struct audio_info *ai);
+EXPORT bool obs_get_audio_info(struct audio_output_info *ai);
 
 /**
  * Loads a plugin module
@@ -225,8 +242,8 @@ EXPORT bool obs_enum_output_types(size_t idx, const char **id);
 /** Gets the graphics context for this OBS context */
 EXPORT graphics_t obs_graphics(void);
 
-/** Get the media context for this OBS context (used for outputs) */
-EXPORT media_t obs_media(void);
+EXPORT audio_t obs_audio(void);
+EXPORT video_t obs_video(void);
 
 /**
  * Adds a source to the user source list and increments the reference counter
@@ -253,7 +270,15 @@ EXPORT obs_source_t obs_get_output_source(uint32_t channel);
  *   Callback function returns true to continue enumeration, or false to end
  * enumeration.
  */
-EXPORT void obs_enum_sources(bool (*enum_proc)(obs_source_t, void*),
+EXPORT void obs_enum_sources(bool (*enum_proc)(void*, obs_source_t),
+		void *param);
+
+/** Enumerates outputs */
+EXPORT void obs_enum_outputs(bool (*enum_proc)(void*, obs_output_t),
+		void *param);
+
+/** Enumerates encoders */
+EXPORT void obs_enum_encoders(bool (*enum_proc)(void*, obs_encoder_t),
 		void *param);
 
 /**
@@ -305,9 +330,7 @@ EXPORT obs_source_t obs_display_getsource(obs_display_t display,
 /* ------------------------------------------------------------------------- */
 /* Sources */
 
-/**
- * Gets the translated display name of a source
- */
+/** Returns the translated display name of a source */
 EXPORT const char *obs_source_getdisplayname(enum obs_source_type type,
 		const char *id, const char *locale);
 
@@ -318,14 +341,14 @@ EXPORT const char *obs_source_getdisplayname(enum obs_source_type type,
  * or modifying video/audio.  Use obs_source_release to release it.
  */
 EXPORT obs_source_t obs_source_create(enum obs_source_type type,
-		const char *id, const char *name, const char *settings);
+		const char *id, const char *name, obs_data_t settings);
 
 /**
  * Adds/releases a reference to a source.  When the last reference is
  * released, the source is destroyed.
  */
-EXPORT int obs_source_addref(obs_source_t source);
-EXPORT int obs_source_release(obs_source_t source);
+EXPORT void obs_source_addref(obs_source_t source);
+EXPORT void obs_source_release(obs_source_t source);
 
 /** Notifies all references that the source should be released */
 EXPORT void obs_source_remove(obs_source_t source);
@@ -342,11 +365,12 @@ EXPORT bool obs_source_removed(obs_source_t source);
  */
 EXPORT uint32_t obs_source_get_output_flags(obs_source_t source);
 
-/** Specifies whether the source can be configured */
-EXPORT bool obs_source_hasconfig(obs_source_t source);
+/** Returns the property list, if any.  Free with obs_properties_destroy */
+EXPORT obs_properties_t obs_source_properties(enum obs_source_type type,
+		const char *id, const char *locale);
 
-/** Opens a configuration panel and attaches it to the parent window */
-EXPORT void obs_source_config(obs_source_t source, void *parent);
+/** Updates settings for this source */
+EXPORT void obs_source_update(obs_source_t source, obs_data_t settings);
 
 /** Renders a video source. */
 EXPORT void obs_source_video_render(obs_source_t source);
@@ -356,22 +380,6 @@ EXPORT uint32_t obs_source_getwidth(obs_source_t source);
 
 /** Gets the height of a source (if it has video) */
 EXPORT uint32_t obs_source_getheight(obs_source_t source);
-
-/**
- * Gets a custom parameter from the source.
- *
- *   Used for efficiently modifying source properties in real time.
- */
-EXPORT size_t obs_source_getparam(obs_source_t source, const char *param,
-		void *buf, size_t buf_size);
-
-/**
- * Sets a custom parameter for the source.
- *
- *   Used for efficiently modifying source properties in real time.
- */
-EXPORT void obs_source_setparam(obs_source_t source, const char *param,
-		const void *data, size_t size);
 
 /** If the source is a filter, returns the parent source of the filter */
 EXPORT obs_source_t obs_filter_getparent(obs_source_t filter);
@@ -390,7 +398,7 @@ EXPORT void obs_source_filter_setorder(obs_source_t source, obs_source_t filter,
 		enum order_movement movement);
 
 /** Gets the settings string for a source */
-EXPORT const char *obs_source_getsettings(obs_source_t source);
+EXPORT obs_data_t obs_source_getsettings(obs_source_t source);
 
 /** Gets the name of a source */
 EXPORT const char *obs_source_getname(obs_source_t source);
@@ -408,11 +416,14 @@ EXPORT signal_handler_t obs_source_signalhandler(obs_source_t source);
 /** Returns the procedure handler for a source */
 EXPORT proc_handler_t obs_source_prochandler(obs_source_t source);
 
+/** Sets the volume for a source that has audio output */
+EXPORT void obs_source_setvolume(obs_source_t source, float volume);
+
+/** Gets the volume for a source that has audio output */
+EXPORT float obs_source_getvolume(obs_source_t source);
+
 /* ------------------------------------------------------------------------- */
 /* Functions used by sources */
-
-/** Saves the settings string for a source */
-EXPORT void obs_source_savesettings(obs_source_t source, const char *settings);
 
 /** Outputs asynchronous video data */
 EXPORT void obs_source_output_video(obs_source_t source,
@@ -447,8 +458,8 @@ EXPORT void obs_source_process_filter(obs_source_t filter,
  */
 EXPORT obs_scene_t obs_scene_create(const char *name);
 
-EXPORT int         obs_scene_addref(obs_scene_t scene);
-EXPORT int         obs_scene_release(obs_scene_t scene);
+EXPORT void        obs_scene_addref(obs_scene_t scene);
+EXPORT void        obs_scene_release(obs_scene_t scene);
 
 /** Gets the scene's source context */
 EXPORT obs_source_t obs_scene_getsource(obs_scene_t scene);
@@ -468,11 +479,16 @@ EXPORT void obs_scene_enum_items(obs_scene_t scene,
 /** Adds/creates a new scene item for a source */
 EXPORT obs_sceneitem_t obs_scene_add(obs_scene_t scene, obs_source_t source);
 
-/** Removes/destroys a scene item.  Returns the source reference counter
- * (if any) */
-EXPORT int obs_sceneitem_destroy(obs_sceneitem_t item);
+EXPORT void obs_sceneitem_addref(obs_sceneitem_t item);
+EXPORT void obs_sceneitem_release(obs_sceneitem_t item);
 
-/** Gets the source of a scene item */
+/** Removes a scene item. */
+EXPORT void obs_sceneitem_remove(obs_sceneitem_t item);
+
+/** Gets the scene parent associated with the scene item. */
+EXPORT obs_scene_t obs_sceneitem_getscene(obs_sceneitem_t item);
+
+/** Gets the source of a scene item. */
 EXPORT obs_source_t obs_sceneitem_getsource(obs_sceneitem_t item);
 
 /* Functions for gettings/setting specific oriantation of a scene item */
@@ -494,26 +510,34 @@ EXPORT void  obs_sceneitem_getscale(obs_sceneitem_t item, struct vec2 *scale);
 /* ------------------------------------------------------------------------- */
 /* Outputs */
 
+EXPORT const char *obs_output_getdisplayname(const char *id,
+		const char *locale);
+
 /**
  * Creates an output.
  *
  *   Outputs allow outputting to file, outputting to network, outputting to
  * directshow, or other custom outputs.
  */
-EXPORT obs_output_t obs_output_create(const char *name, const char *settings);
+EXPORT obs_output_t obs_output_create(const char *id, const char *name,
+		obs_data_t settings);
 EXPORT void obs_output_destroy(obs_output_t output);
 
 /** Starts the output. */
-EXPORT void obs_output_start(obs_output_t output);
+EXPORT bool obs_output_start(obs_output_t output);
 
 /** Stops the output. */
 EXPORT void obs_output_stop(obs_output_t output);
 
-/** Specifies whether the output can be configured */
-EXPORT bool obs_output_canconfig(obs_output_t output);
+/** Returns whether the output is active */
+EXPORT bool obs_output_active(obs_output_t output);
 
-/** Opens a configuration panel with the specified parent window */
-EXPORT void obs_output_config(obs_output_t output, void *parent);
+/** Returns the property list, if any.  Free with obs_properties_destroy */
+EXPORT obs_properties_t obs_output_properties(const char *id,
+		const char *locale);
+
+/** Updates the settings for this output context */
+EXPORT void obs_output_update(obs_output_t output, obs_data_t settings);
 
 /** Specifies whether the output can be paused */
 EXPORT bool obs_output_canpause(obs_output_t output);
@@ -522,23 +546,54 @@ EXPORT bool obs_output_canpause(obs_output_t output);
 EXPORT void obs_output_pause(obs_output_t output);
 
 /* Gets the current output settings string */
-EXPORT const char *obs_output_get_settings(obs_output_t output);
+EXPORT obs_data_t obs_output_get_settings(obs_output_t output);
 
-/* Saves the output settings string, typically used only by outputs */
-EXPORT void obs_output_save_settings(obs_output_t output,
-		const char *settings);
+
+/* ------------------------------------------------------------------------- */
+/* Encoders */
+EXPORT const char *obs_encoder_getdisplayname(const char *id,
+		const char *locale);
+
+EXPORT obs_encoder_t obs_encoder_create(const char *id, const char *name,
+		obs_data_t settings);
+EXPORT void obs_encoder_destroy(obs_encoder_t encoder);
+
+/** Returns the property list, if any.  Free with obs_properties_destroy */
+EXPORT obs_properties_t obs_output_properties(const char *id,
+		const char *locale);
+
+EXPORT void obs_encoder_update(obs_encoder_t encoder, obs_data_t settings);
+
+EXPORT bool obs_encoder_reset(obs_encoder_t encoder);
+
+EXPORT bool obs_encoder_encode(obs_encoder_t encoder, void *frames,
+		size_t size);
+EXPORT int obs_encoder_getheader(obs_encoder_t encoder,
+		struct encoder_packet **packets);
+
+EXPORT bool obs_encoder_start(obs_encoder_t encoder,
+		void (*new_packet)(void *param, struct encoder_packet *packet),
+		void *param);
+EXPORT bool obs_encoder_stop(obs_encoder_t encoder,
+		void (*new_packet)(void *param, struct encoder_packet *packet),
+		void *param);
+
+EXPORT bool obs_encoder_setbitrate(obs_encoder_t encoder, uint32_t bitrate,
+		uint32_t buffersize);
+
+EXPORT bool obs_encoder_request_keyframe(obs_encoder_t encoder);
+
+EXPORT obs_data_t obs_encoder_get_settings(obs_encoder_t encoder);
 
 
 /* ------------------------------------------------------------------------- */
 /* Stream Services */
-EXPORT obs_service_t obs_service_create(const char *service,
-		const char *settings);
-EXPORT void obs_service_destroy(obs_service_t service);
+EXPORT const char *obs_service_getdisplayname(const char *id,
+		const char *locale);
 
-EXPORT void obs_service_setdata(obs_service_t service,const char *attribute,
-		const char *data);
-EXPORT const char *obs_service_getdata(obs_service_t service,
-		const char *attribute);
+EXPORT obs_service_t obs_service_create(const char *service,
+		obs_data_t settings);
+EXPORT void obs_service_destroy(obs_service_t service);
 
 
 #ifdef __cplusplus

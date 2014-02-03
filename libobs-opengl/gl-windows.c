@@ -20,7 +20,7 @@
 
 #include <util/darray.h>
 #include "gl-subsystem.h"
-#include "glew/include/GL/wglew.h"
+#include "GL/wgl_obs.h"
 
 /* Basically swapchain-specific information.  Fortunately for windows this is
  * super basic stuff */
@@ -155,10 +155,9 @@ static inline HGLRC gl_init_basic_context(HDC hdc)
 
 static const int attribs[] = 
 {
-	WGL_CONTEXT_MAJOR_VERSION_ARB, 3,
-	WGL_CONTEXT_MINOR_VERSION_ARB, 2,
-	WGL_CONTEXT_FLAGS_ARB, WGL_CONTEXT_DEBUG_BIT_ARB |
-	                       WGL_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB,
+#ifdef _DEBUG
+	WGL_CONTEXT_FLAGS_ARB, WGL_CONTEXT_DEBUG_BIT_ARB,
+#endif
 	WGL_CONTEXT_PROFILE_MASK_ARB, WGL_CONTEXT_CORE_PROFILE_BIT_ARB,
 	0, 0
 };
@@ -166,7 +165,7 @@ static const int attribs[] =
 static inline HGLRC gl_init_context(HDC hdc)
 {
 #ifdef _DEBUG
-	if (WGLEW_ARB_create_context) {
+	if (wgl_ext_ARB_create_context) {
 		HGLRC hglrc = wglCreateContextAttribsARB(hdc, 0, attribs);
 		if (!hglrc) {
 			blog(LOG_ERROR, "wglCreateContextAttribsARB failed, %u",
@@ -236,36 +235,27 @@ static inline void required_extension_error(const char *extension)
 	blog(LOG_ERROR, "OpenGL extension %s is required", extension);
 }
 
-static bool gl_init_extensions(device_t device)
+static bool gl_init_extensions(HDC hdc)
 {
-	GLenum errorcode = glewInit();
-	if (errorcode != GLEW_OK) {
-		blog(LOG_ERROR, "glewInit failed, %u", errorcode);
+	if (!wgl_LoadFunctions(hdc)) {
+		blog(LOG_ERROR, "Failed to load WGL entry functions.");
 		return false;
 	}
 
-	if (!GLEW_VERSION_2_1) {
-		blog(LOG_ERROR, "OpenGL 2.1 minimum required by the graphics "
-		                "adapter");
+	if (!wgl_ext_ARB_pixel_format) {
+		required_extension_error("ARB_pixel_format");
 		return false;
 	}
 
-	if (!GLEW_ARB_framebuffer_object) {
-		required_extension_error("GL_ARB_framebuffer_object");
+	if (!wgl_ext_ARB_create_context) {
+		required_extension_error("ARB_create_context");
 		return false;
 	}
 
-	if (!WGLEW_ARB_pixel_format) {
-		required_extension_error("WGL_ARB_pixel_format");
+	if (!wgl_ext_ARB_create_context_profile) {
+		required_extension_error("ARB_create_context_profile");
 		return false;
 	}
-
-	if (GLEW_ARB_copy_image)
-		device->copy_type = COPY_TYPE_ARB;
-	else if (GLEW_NV_copy_image)
-		device->copy_type = COPY_TYPE_NV;
-	else
-		device->copy_type = COPY_TYPE_FBO_BLIT;
 
 	return true;
 }
@@ -377,19 +367,6 @@ static bool init_default_swap(struct gl_platform *plat, device_t device,
 	return true;
 }
 
-#ifdef _DEBUG
-static void APIENTRY gl_debug_message_amd(GLuint id,
-                                          GLenum category,
-                                          GLenum severity,
-                                          GLsizei length,
-                                          const GLchar *msg,
-                                          void *param)
-{
-	OutputDebugStringA(msg);
-	OutputDebugStringA("\n");
-}
-#endif
-
 void gl_update(device_t device)
 {
 	/* does nothing on windows */
@@ -408,7 +385,7 @@ struct gl_platform *gl_platform_create(device_t device,
 
 	if (!gl_dummy_context_init(&dummy))
 		goto fail;
-	if (!gl_init_extensions(device))
+	if (!gl_init_extensions(dummy.hdc))
 		goto fail;
 
 	/* you have to have a dummy context open before you can actually
@@ -425,18 +402,10 @@ struct gl_platform *gl_platform_create(device_t device,
 	if (!plat->hrc)
 		goto fail;
 
-	if (GLEW_ARB_seamless_cube_map) {
-		glEnable(GL_TEXTURE_CUBE_MAP_SEAMLESS);
-		gl_success("GL_TEXTURE_CUBE_MAP_SEAMLESS");
+	if (!ogl_LoadFunctions()) {
+		blog(LOG_ERROR, "Failed to initialize OpenGL entry functions.");
+		goto fail;
 	}
-
-#ifdef _DEBUG
-	if (GLEW_AMD_debug_output) {
-		glDebugMessageEnableAMD(0, 0, 0, NULL, true);
-		glDebugMessageCallbackAMD(gl_debug_message_amd, device);
-		gl_success("glDebugMessageCallback");
-	}
-#endif
 
 	return plat;
 

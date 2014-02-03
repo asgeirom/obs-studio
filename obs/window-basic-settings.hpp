@@ -17,25 +17,78 @@
 
 #pragma once
 
-#include "forms/OBSWindows.h"
-#include "settings-basic.hpp"
-
+#include <util/util.hpp>
+#include <QDialog>
 #include <memory>
 
-class OBSBasicSettings : public OBSBasicSettingsBase {
+class QAbstractButton;
+
+#include "ui_OBSBasicSettings.h"
+
+class OBSBasicSettings : public QDialog {
+	Q_OBJECT
+
+private:
+	std::unique_ptr<Ui::OBSBasicSettings> ui;
+	ConfigFile localeIni;
+	bool generalChanged;
+	bool outputsChanged;
+	bool audioChanged;
+	bool videoChanged;
+	int  pageIndex;
+	bool loading;
+
+	inline bool Changed() const
+	{
+		return generalChanged || outputsChanged || audioChanged ||
+			videoChanged;
+	}
+
+	inline void ClearChanged()
+	{
+		generalChanged = false;
+		outputsChanged = false;
+		audioChanged   = false;
+		videoChanged   = false;
+	}
+
+	bool QueryChanges();
+
+	void LoadGeneralSettings();
+	//void LoadOutputSettings();
+	//void LoadAudioSettings();
+	void LoadVideoSettings();
+
+	/* general */
+	void LoadLanguageList();
+
+	/* video */
+	void LoadRendererList();
+	void ResetDownscales(uint32_t cx, uint32_t cy);
+	void LoadResolutionLists();
+	void LoadFPSData();
+	void LoadSettings(bool changedOnly);
+
+	void SaveGeneralSettings();
+	//void SaveOutputSettings();
+	//void SaveAudioSettings();
+	void SaveVideoSettings();
+	void SaveSettings();
+
+private slots:
+	void on_listWidget_itemSelectionChanged();
+	void on_buttonBox_clicked(QAbstractButton *button);
+
+	void on_language_currentIndexChanged(int index);
+
+	void on_renderer_currentIndexChanged(int index);
+	void on_fpsType_currentIndexChanged(int index);
+	void on_baseResolution_editTextChanged(const QString &text);
+	void on_outputResolution_editTextChanged(const QString &text);
+
 protected:
-	std::unique_ptr<BasicSettingsData> settings;
-
-	virtual void PageChanged(wxListbookEvent &event);
-	virtual void PageChanging(wxListbookEvent &event);
-	virtual void OnClose(wxCloseEvent &event);
-
-	bool ConfirmChanges();
-
-	virtual void OKClicked(wxCommandEvent &event);
-	virtual void CancelClicked(wxCommandEvent &event);
-	virtual void ApplyClicked(wxCommandEvent &event);
+	virtual void closeEvent(QCloseEvent *event);
 
 public:
-	OBSBasicSettings(wxWindow *parent);
+	OBSBasicSettings(QWidget *parent);
 };

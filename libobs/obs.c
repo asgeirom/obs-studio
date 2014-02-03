@@ -18,7 +18,7 @@
 #include "callback/calldata.h"
 
 #include "obs.h"
-#include "obs-data.h"
+#include "obs-internal.h"
 #include "obs-module.h"
 
 struct obs_subsystem *obs = NULL;
@@ -37,11 +37,11 @@ static inline void make_gs_init_data(struct gs_init_data *gid,
 	gid->adapter         = ovi->adapter;
 }
 
-static inline void make_video_info(struct video_info *vi,
+static inline void make_video_info(struct video_output_info *vi,
 		struct obs_video_info *ovi)
 {
 	vi->name    = "video";
-	vi->type    = ovi->output_format;
+	vi->format  = ovi->output_format;
 	vi->fps_num = ovi->fps_num;
 	vi->fps_den = ovi->fps_den;
 	vi->width   = ovi->output_width;
@@ -120,11 +120,11 @@ static bool obs_init_graphics(struct obs_video_info *ovi)
 static bool obs_init_video(struct obs_video_info *ovi)
 {
 	struct obs_video *video = &obs->video;
-	struct video_info vi;
+	struct video_output_info vi;
 	int errorcode;
 
 	make_video_info(&vi, ovi);
-	errorcode = video_output_open(&video->video, obs->media, &vi);
+	errorcode = video_output_open(&video->video, &vi);
 
 	if (errorcode != VIDEO_OUTPUT_SUCCESS) {
 		if (errorcode == VIDEO_OUTPUT_INVALIDPARAM)
@@ -195,14 +195,14 @@ static void obs_free_graphics()
 	}
 }
 
-static bool obs_init_audio(struct audio_info *ai)
+static bool obs_init_audio(struct audio_output_info *ai)
 {
 	struct obs_audio *audio = &obs->audio;
 	int errorcode;
 
 	/* TODO: sound subsystem */
 
-	errorcode = audio_output_open(&audio->audio, obs->media, ai);
+	errorcode = audio_output_open(&audio->audio, ai);
 	if (errorcode == AUDIO_OUTPUT_SUCCESS)
 		return true;
 	else if (errorcode == AUDIO_OUTPUT_INVALIDPARAM)
@@ -224,26 +224,46 @@ static void obs_free_audio(void)
 
 static bool obs_init_data(void)
 {
-	struct obs_data *data = &obs->data;
+	struct obs_program_data *data = &obs->data;
+	pthread_mutexattr_t attr;
+	bool success = false;
 
 	pthread_mutex_init_value(&obs->data.displays_mutex);
 
-	if (pthread_mutex_init(&data->sources_mutex, NULL) != 0)
+	if (pthread_mutexattr_init(&attr) != 0)
 		return false;
-	if (pthread_mutex_init(&data->displays_mutex, NULL) != 0)
-		return false;
+	if (pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE) != 0)
+		goto fail;
+	if (pthread_mutex_init(&data->sources_mutex, &attr) != 0)
+		goto fail;
+	if (pthread_mutex_init(&data->displays_mutex, &attr) != 0)
+		goto fail;
+	if (pthread_mutex_init(&data->outputs_mutex, &attr) != 0)
+		goto fail;
+	if (pthread_mutex_init(&data->encoders_mutex, &attr) != 0)
+		goto fail;
 
-	return true;
+	data->valid = true;
+
+fail:
+	pthread_mutexattr_destroy(&attr);
+	return data->valid;
 }
 
 static void obs_free_data(void)
 {
-	struct obs_data *data = &obs->data;
+	struct obs_program_data *data = &obs->data;
 	uint32_t i;
+
+	data->valid = false;
 
 	for (i = 0; i < MAX_CHANNELS; i++)
 		obs_set_output_source(i, NULL);
 
+	while (data->outputs.num)
+		obs_output_destroy(data->outputs.array[0]);
+	while (data->encoders.num)
+		obs_encoder_destroy(data->encoders.array[0]);
 	while (data->displays.num)
 		obs_display_destroy(data->displays.array[0]);
 
@@ -252,6 +272,11 @@ static void obs_free_data(void)
 		obs_source_release(data->sources.array[i]);
 	da_free(data->sources);
 	pthread_mutex_unlock(&obs->data.sources_mutex);
+
+	pthread_mutex_destroy(&data->sources_mutex);
+	pthread_mutex_destroy(&data->displays_mutex);
+	pthread_mutex_destroy(&data->outputs_mutex);
+	pthread_mutex_destroy(&data->encoders_mutex);
 }
 
 static inline bool obs_init_handlers(void)
@@ -267,18 +292,10 @@ static inline bool obs_init_handlers(void)
 static bool obs_init(void)
 {
 	obs = bmalloc(sizeof(struct obs_subsystem));
-
 	memset(obs, 0, sizeof(struct obs_subsystem));
+
 	obs_init_data();
-
-	if (!obs_init_handlers())
-		return false;
-
-	obs->media = media_open();
-	if (!obs->media)
-		return false;
-
-	return true;
+	return obs_init_handlers();
 }
 
 bool obs_startup()
@@ -309,12 +326,13 @@ void obs_shutdown(void)
 	da_free(obs->transition_types);
 	da_free(obs->output_types);
 	da_free(obs->service_types);
+	da_free(obs->ui_modal_callbacks);
+	da_free(obs->ui_modeless_callbacks);
 
 	obs_free_data();
 	obs_free_video();
 	obs_free_graphics();
 	obs_free_audio();
-	media_close(obs->media);
 	proc_handler_destroy(obs->procs);
 	signal_handler_destroy(obs->signals);
 
@@ -343,22 +361,19 @@ bool obs_reset_video(struct obs_video_info *ovi)
 	return obs_init_video(ovi);
 }
 
-bool obs_reset_audio(struct audio_info *ai)
+bool obs_reset_audio(struct audio_output_info *ai)
 {
-	/*obs_free_audio();
+	obs_free_audio();
 	if(!ai)
 		return true;
 
-	return obs_init_audio(ai);*/
-
-	/* TODO */
-	return true;
+	return obs_init_audio(ai);
 }
 
 bool obs_get_video_info(struct obs_video_info *ovi)
 {
 	struct obs_video *video = &obs->video;
-	const struct video_info *info;
+	const struct video_output_info *info;
 
 	if (!obs || !video->graphics)
 		return false;
@@ -370,23 +385,23 @@ bool obs_get_video_info(struct obs_video_info *ovi)
 	ovi->base_height   = video->base_height;
 	ovi->output_width  = info->width;
 	ovi->output_height = info->height;
-	ovi->output_format = info->type;
+	ovi->output_format = info->format;
 	ovi->fps_num       = info->fps_num;
 	ovi->fps_den       = info->fps_den;
 
 	return true;
 }
 
-bool obs_get_audio_info(struct audio_info *ai)
+bool obs_get_audio_info(struct audio_output_info *aoi)
 {
 	struct obs_audio *audio = &obs->audio;
-	const struct audio_info *info;
+	const struct audio_output_info *info;
 
 	if (!obs || !audio->audio)
 		return false;
 
 	info = audio_output_getinfo(audio->audio);
-	memcpy(ai, info, sizeof(struct audio_info));
+	memcpy(aoi, info, sizeof(struct audio_output_info));
 
 	return true;
 }
@@ -428,9 +443,70 @@ graphics_t obs_graphics(void)
 	return (obs != NULL) ? obs->video.graphics : NULL;
 }
 
-media_t obs_media(void)
+audio_t obs_audio(void)
 {
-	return obs->media;
+	return (obs != NULL) ? obs->audio.audio : NULL;
+}
+
+video_t obs_video(void)
+{
+	return (obs != NULL) ? obs->video.video : NULL;
+}
+
+/* TODO: optimize this later so it's not just O(N) string lookups */
+static inline struct obs_modal_ui *get_modal_ui_callback(const char *name,
+		const char *task, const char *target)
+{
+	for (size_t i = 0; i < obs->ui_modal_callbacks.num; i++) {
+		struct obs_modal_ui *callback = obs->ui_modal_callbacks.array+i;
+
+		if (strcmp(callback->name,   name)   == 0 &&
+		    strcmp(callback->task,   task)   == 0 &&
+		    strcmp(callback->target, target) == 0)
+			return callback;
+	}
+
+	return NULL;
+}
+
+static inline struct obs_modeless_ui *get_modeless_ui_callback(const char *name,
+		const char *task, const char *target)
+{
+	for (size_t i = 0; i < obs->ui_modeless_callbacks.num; i++) {
+		struct obs_modeless_ui *callback;
+		callback = obs->ui_modeless_callbacks.array+i;
+
+		if (strcmp(callback->name,   name)   == 0 &&
+		    strcmp(callback->task,   task)   == 0 &&
+		    strcmp(callback->target, target) == 0)
+			return callback;
+	}
+
+	return NULL;
+}
+
+int obs_exec_ui(const char *name, const char *task, const char *target,
+		void *data, void *ui_data)
+{
+	struct obs_modal_ui *callback;
+	int errorcode = OBS_UI_NOTFOUND;
+
+	callback = get_modal_ui_callback(name, task, target);
+	if (callback) {
+		bool success = callback->callback(data, ui_data);
+		errorcode = success ? OBS_UI_SUCCESS : OBS_UI_CANCEL;
+	}
+
+	return errorcode;
+}
+
+void *obs_create_ui(const char *name, const char *task, const char *target,
+		void *data, void *ui_data)
+{
+	struct obs_modeless_ui *callback;
+
+	callback = get_modeless_ui_callback(name, task, target);
+	return callback ? callback->callback(data, ui_data) : NULL;
 }
 
 bool obs_add_source(obs_source_t source)
@@ -462,35 +538,70 @@ obs_source_t obs_get_output_source(uint32_t channel)
 void obs_set_output_source(uint32_t channel, obs_source_t source)
 {
 	struct obs_source *prev_source;
+	struct calldata params = {0};
 	assert(channel < MAX_CHANNELS);
 
 	prev_source = obs->data.channels[channel];
+
+	calldata_setuint32(&params, "channel", channel);
+	calldata_setptr(&params, "prev_source", prev_source);
+	calldata_setptr(&params, "source", source);
+	signal_handler_signal(obs->signals, "channel-change", &params);
+	calldata_getptr(&params, "source", &source);
+	calldata_free(&params);
+
 	obs->data.channels[channel] = source;
 
-	if (source)
-		obs_source_addref(source);
-	if (prev_source)
-		obs_source_release(prev_source);
+	if (source != prev_source) {
+		if (source)
+			obs_source_addref(source);
+		if (prev_source)
+			obs_source_release(prev_source);
+	}
 }
 
-void obs_enum_sources(bool (*enum_proc)(obs_source_t, void*), void *param)
+void obs_enum_outputs(bool (*enum_proc)(void*, obs_output_t), void *param)
 {
-	struct obs_data *data = &obs->data;
-	size_t i;
+	struct obs_program_data *data = &obs->data;
+
+	pthread_mutex_lock(&data->outputs_mutex);
+
+	for (size_t i = 0; i < data->outputs.num; i++)
+		if (!enum_proc(param, data->outputs.array[i]))
+			break;
+
+	pthread_mutex_unlock(&data->outputs_mutex);
+}
+
+void obs_enum_encoders(bool (*enum_proc)(void*, obs_encoder_t), void *param)
+{
+	struct obs_program_data *data = &obs->data;
+
+	pthread_mutex_lock(&data->encoders_mutex);
+
+	for (size_t i = 0; i < data->encoders.num; i++)
+		if (!enum_proc(param, data->encoders.array[i]))
+			break;
+
+	pthread_mutex_unlock(&data->encoders_mutex);
+}
+
+void obs_enum_sources(bool (*enum_proc)(void*, obs_source_t), void *param)
+{
+	struct obs_program_data *data = &obs->data;
 
 	pthread_mutex_lock(&data->sources_mutex);
 
-	for (i = 0; i < data->sources.num; i++) {
-		if (!enum_proc(data->sources.array[i], param))
+	for (size_t i = 0; i < data->sources.num; i++)
+		if (!enum_proc(param, data->sources.array[i]))
 			break;
-	}
 
 	pthread_mutex_unlock(&data->sources_mutex);
 }
 
 obs_source_t obs_get_source_by_name(const char *name)
 {
-	struct obs_data *data = &obs->data;
+	struct obs_program_data *data = &obs->data;
 	struct obs_source *source = NULL;
 	size_t i;
 

@@ -53,9 +53,14 @@ struct event_data {
 	bool            manual;
 };
 
+enum event_type {
+	EVENT_TYPE_AUTO,
+	EVENT_TYPE_MANUAL
+};
+
 typedef struct event_data event_t;
 
-static inline int event_init(event_t *event, bool manual)
+static inline int event_init(event_t *event, enum event_type type)
 {
 	int code = 0;
 
@@ -65,7 +70,7 @@ static inline int event_init(event_t *event, bool manual)
 	if ((code = pthread_cond_init(&event->cond, NULL)) < 0)
 		pthread_mutex_destroy(&event->mutex);
 
-	event->manual = manual;
+	event->manual = (type == EVENT_TYPE_MANUAL);
 	event->signalled = false;
 
 	return code;
@@ -83,7 +88,8 @@ static inline int event_wait(event_t *event)
 {
 	int code = 0;
 	pthread_mutex_lock(&event->mutex);
-	if ((code = pthread_cond_wait(&event->cond, &event->mutex)) == 0) {
+	if (event->signalled ||
+		(code = pthread_cond_wait(&event->cond, &event->mutex)) == 0) {
 		if (!event->manual)
 			event->signalled = false;
 		pthread_mutex_unlock(&event->mutex);

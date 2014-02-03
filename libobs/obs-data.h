@@ -1,5 +1,5 @@
 /******************************************************************************
-    Copyright (C) 2013 by Hugh Bailey <obs.jim@gmail.com>
+    Copyright (C) 2014 by Hugh Bailey <obs.jim@gmail.com>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -17,87 +17,151 @@
 
 #pragma once
 
-#include "util/darray.h"
-#include "util/threading.h"
+#include "util/c99defs.h"
 
-#include "graphics/graphics.h"
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-#include "media-io/media-io.h"
-#include "media-io/video-io.h"
-#include "media-io/audio-io.h"
+/*
+ * OBS data settings storage
+ *
+ *   This is used for retrieving or setting the data settings for things such
+ * as sources, encoders, etc.  This is designed for JSON serialization.
+ */
 
-#include "obs.h"
-#include "obs-module.h"
-#include "obs-source.h"
-#include "obs-output.h"
-#include "obs-service.h"
+struct obs_data;
+struct obs_data_item;
+struct obs_data_array;
+typedef struct obs_data       *obs_data_t;
+typedef struct obs_data_item  *obs_data_item_t;
+typedef struct obs_data_array *obs_data_array_t;
 
-#define NUM_TEXTURES 2
-
-struct obs_display {
-	swapchain_t                 swap; /* can be NULL if just sound */
-	obs_source_t                channels[MAX_CHANNELS];
-
-	/* TODO: sound output target */
+enum obs_data_type {
+	OBS_DATA_NULL,
+	OBS_DATA_STRING,
+	OBS_DATA_NUMBER,
+	OBS_DATA_BOOLEAN,
+	OBS_DATA_OBJECT,
+	OBS_DATA_ARRAY
 };
 
 /* ------------------------------------------------------------------------- */
+/* Main usage functions */
 
-struct obs_video {
-	graphics_t                  graphics;
-	stagesurf_t                 copy_surfaces[NUM_TEXTURES];
-	texture_t                   render_textures[NUM_TEXTURES];
-	texture_t                   output_textures[NUM_TEXTURES];
-	effect_t                    default_effect;
-	bool                        textures_copied[NUM_TEXTURES];
-	bool                        copy_mapped;
-	int                         cur_texture;
+EXPORT obs_data_t obs_data_create();
+EXPORT obs_data_t obs_data_create_from_json(const char *json_string);
+EXPORT void obs_data_addref(obs_data_t data);
+EXPORT void obs_data_release(obs_data_t data);
 
-	video_t                     video;
-	pthread_t                   video_thread;
-	bool                        thread_initialized;
+EXPORT const char *obs_data_getjson(obs_data_t data);
 
-	uint32_t                    base_width;
-	uint32_t                    base_height;
-};
+EXPORT void obs_data_erase(obs_data_t data, const char *name);
 
-struct obs_audio {
-	/* TODO: audio subsystem */
-	audio_t                     audio;
-};
+/* Set functions */
+EXPORT void obs_data_setstring(obs_data_t data, const char *name,
+		const char *val);
+EXPORT void obs_data_setint(obs_data_t data, const char *name,
+		long long val);
+EXPORT void obs_data_setdouble(obs_data_t data, const char *name, double val);
+EXPORT void obs_data_setbool(obs_data_t data, const char *name, bool val);
+EXPORT void obs_data_setobj(obs_data_t data, const char *name, obs_data_t obj);
+EXPORT void obs_data_setarray(obs_data_t data, const char *name,
+		obs_data_array_t array);
 
-/* user sources, output channels, and displays */
-struct obs_data {
-	/* arrays of pointers jim?  you should really stop being lazy and use
-	 * linked lists. */
-	DARRAY(struct obs_display*) displays;
-	DARRAY(struct obs_source*)  sources;
+/*
+ * Default value functions.
+ *
+ * These functions check to ensure the value exists, and is of a specific type.
+ * If not, it sets the default value instead.
+ */
+EXPORT void obs_data_set_default_string(obs_data_t data, const char *name,
+		const char *val);
+EXPORT void obs_data_set_default_int(obs_data_t data, const char *name,
+		long long val);
+EXPORT void obs_data_set_default_double(obs_data_t data, const char *name,
+		double val);
+EXPORT void obs_data_set_default_bool(obs_data_t data, const char *name,
+		bool val);
+EXPORT void obs_data_set_default_obj(obs_data_t data, const char *name,
+		obs_data_t obj);
 
-	obs_source_t                channels[MAX_CHANNELS];
-	pthread_mutex_t             sources_mutex;
-	pthread_mutex_t             displays_mutex;
-};
+/*
+ * Get functions
+ * NOTE: use a macro if you use 'defaults' in more than one place
+ */
+EXPORT const char *obs_data_getstring(obs_data_t data, const char *name);
+EXPORT long long obs_data_getint(obs_data_t data, const char *name);
+EXPORT double obs_data_getdouble(obs_data_t data, const char *name);
+EXPORT bool obs_data_getbool(obs_data_t data, const char *name);
+EXPORT obs_data_t obs_data_getobj(obs_data_t data, const char *name);
+EXPORT obs_data_array_t obs_data_getarray(obs_data_t data, const char *name);
 
-struct obs_subsystem {
-	DARRAY(struct obs_module)   modules;
-	DARRAY(struct source_info)  input_types;
-	DARRAY(struct source_info)  filter_types;
-	DARRAY(struct source_info)  transition_types;
-	DARRAY(struct output_info)  output_types;
-	DARRAY(struct service_info) service_types;
+/* Array functions */
+EXPORT obs_data_array_t obs_data_array_create();
+EXPORT void obs_data_array_addref(obs_data_array_t array);
+EXPORT void obs_data_array_release(obs_data_array_t array);
 
-	media_t                     media;
+EXPORT size_t obs_data_array_count(obs_data_array_t array);
+EXPORT obs_data_t obs_data_array_item(obs_data_array_t array, size_t idx);
+EXPORT size_t obs_data_array_push_back(obs_data_array_t array, obs_data_t obj);
+EXPORT void obs_data_array_insert(obs_data_array_t array, size_t idx,
+		obs_data_t obj);
+EXPORT void obs_data_array_erase(obs_data_array_t array, size_t idx);
 
-	signal_handler_t            signals;
-	proc_handler_t              procs;
+/* ------------------------------------------------------------------------- */
+/* Item iteration */
 
-	/* segmented into multiple sub-structures to keep things a bit more
-	 * clean and organized */
-	struct obs_video            video;
-	struct obs_audio            audio;
-	struct obs_data             data;
-};
+EXPORT obs_data_item_t obs_data_first(obs_data_t data);
+EXPORT obs_data_item_t obs_data_item_byname(obs_data_t data, const char *name);
+EXPORT bool obs_data_item_next(obs_data_item_t *item);
+EXPORT void obs_data_item_release(obs_data_item_t *item);
+EXPORT void obs_data_item_remove(obs_data_item_t *item);
 
-extern struct obs_subsystem *obs;
+/* Gets Item type */
+EXPORT enum obs_data_type obs_data_item_gettype(obs_data_item_t item);
 
-extern void *obs_video_thread(void *param);
+/* Item set functions */
+EXPORT void obs_data_item_setstring(obs_data_item_t *item, const char *val);
+EXPORT void obs_data_item_setint(obs_data_item_t *item, long long val);
+EXPORT void obs_data_item_setdouble(obs_data_item_t *item, double val);
+EXPORT void obs_data_item_setbool(obs_data_item_t *item, bool val);
+EXPORT void obs_data_item_setobj(obs_data_item_t *item, obs_data_t val);
+EXPORT void obs_data_item_setarray(obs_data_item_t *item, obs_data_array_t val);
+
+/* Item get functions */
+EXPORT const char *obs_data_item_getstring(obs_data_item_t item);
+EXPORT long long obs_data_item_getint(obs_data_item_t item);
+EXPORT double obs_data_item_getdouble(obs_data_item_t item);
+EXPORT bool obs_data_item_getbool(obs_data_item_t item);
+EXPORT obs_data_t obs_data_item_getobj(obs_data_item_t item);
+EXPORT obs_data_array_t obs_data_item_getarray(obs_data_item_t item);
+
+/* ------------------------------------------------------------------------- */
+/* OBS-specific functions */
+
+static inline obs_data_t obs_data_newref(obs_data_t data)
+{
+	if (data)
+		obs_data_addref(data);
+	else
+		data = obs_data_create();
+
+	return data;
+}
+
+static inline void obs_data_replace(obs_data_t *current, obs_data_t replacement)
+{
+	if (!current)
+		return;
+
+	if (*current != replacement) {
+		replacement = obs_data_newref(replacement);
+		obs_data_release(*current);
+		*current = replacement;
+	}
+}
+
+#ifdef __cplusplus
+}
+#endif

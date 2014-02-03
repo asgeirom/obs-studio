@@ -1,6 +1,7 @@
+#include <string.h>
 #include "obs-outputs.h"
 
-static const char *outputs[1] = {"rtmp_stream"};
+static const char *outputs[] = {"rtmp_stream"};
 
 const char *enum_outputs(size_t idx)
 {

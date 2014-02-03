@@ -53,7 +53,8 @@ void *os_dlopen(const char *path)
 	HMODULE h_library = NULL;
 
 	dstr_init_copy(&dll_name, path);
-	dstr_cat(&dll_name, ".dll");
+	if (!dstr_find(&dll_name, ".dll"))
+		dstr_cat(&dll_name, ".dll");
 
 	os_utf8_to_wcs(dll_name.array, 0, &wpath);
 	h_library = LoadLibraryW(wpath);
@@ -147,7 +148,7 @@ char *os_get_config_path(const char *name)
 
 bool os_file_exists(const char *path)
 {
-	WIN32_FIND_DATA wfd;
+	WIN32_FIND_DATAW wfd;
 	HANDLE hFind;
 	wchar_t *path_utf16;
 

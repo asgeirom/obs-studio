@@ -1,14 +1,47 @@
-include_directories(SYSTEM ${obs_SOURCE_DIR}/libobs)
+project(test-input)
 
-add_library(test-input MODULE
+include_directories(SYSTEM "${CMAKE_SOURCE_DIR}/libobs")
+
+if(APPLE)
+	set(test-input_PLATFORM_SOURCES
+		test-desktop.m)
+
+	set_source_files_properties(test-desktop.m
+		PROPERTIES LANGUAGE C
+			COMPILE_FLAGS "-fobjc-arc")
+
+	find_library(IOSURF IOSurface)
+	include_directories(${IOSURF})
+	mark_as_advanced(${IOSURF})
+
+	find_library(COCOA Cocoa)
+	include_directories(${COCOA})
+	mark_as_advanced(${COCOA})
+
+	set(test-input_PLATFORM_DEPS
+		${IOSURF}
+		${COCOA})
+endif()
+
+set(test-input_SOURCES
+	${test-input_PLATFORM_SOURCES}
 	test-filter.c
 	test-input.c
+	test-sinewave.c
 	test-random.c)
 
+set(test-input_HEADERS
+	test-filter.h
+	test-input-exports.h
+	test-random.h
+	test-sinewave.h)
+
+add_library(test-input MODULE
+	${test-input_SOURCES}
+	${test-input_HEADERS})
+
 target_link_libraries(test-input
+	${test-input_PLATFORM_DEPS}
 	libobs)
 
-file(COPY
-	${obs_SOURCE_DIR}/build/data/obs-plugins/test-input/draw.effect
-	${obs_SOURCE_DIR}/build/data/obs-plugins/test-input/test.effect
-	DESTINATION ${obs_BINARY_DIR}/data/obs-plugins/test-input/)
+install_obs_plugin_data(test-input ../../build/data/obs-plugins/test-input)

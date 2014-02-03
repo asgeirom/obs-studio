@@ -1,5 +1,6 @@
 /******************************************************************************
     Copyright (C) 2013 by Hugh Bailey <obs.jim@gmail.com>
+    Copyright (C) 2014 by Zachary Lund <admin@computerquip.com>
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License as published by
@@ -16,112 +17,257 @@
 ******************************************************************************/
 
 #include <obs.hpp>
-
-#include <wx/msgdlg.h>
+#include <QMessageBox>
+#include <QShowEvent>
 
 #include "obs-app.hpp"
-#include "wx-wrappers.hpp"
 #include "window-basic-settings.hpp"
-#include "window-basic-main.hpp"
 #include "window-namedialog.hpp"
+#include "window-basic-main.hpp"
+#include "qt-wrappers.hpp"
+
+#include "ui_OBSBasic.h"
+
 using namespace std;
 
-void OBSBasic::SceneAdded(obs_source_t source)
+Q_DECLARE_METATYPE(OBSScene);
+Q_DECLARE_METATYPE(OBSSceneItem);
+
+OBSBasic::OBSBasic(QWidget *parent)
+	: OBSMainWindow (parent),
+	  ui            (new Ui::OBSBasic)
 {
-	const char *name  = obs_source_getname(source);
-	obs_scene_t scene = obs_scene_fromsource(source);
-	scenes->Append(wxString(name, wxConvUTF8), scene);
+	ui->setupUi(this);
 }
 
-void OBSBasic::SceneRemoved(obs_source_t source)
+void OBSBasic::OBSInit()
 {
-	const char *name = obs_source_getname(source);
+	/* make sure it's fully displayed before doing any initialization */
+	show();
+	App()->processEvents();
 
-	int item = scenes->FindString(name);
-	if (item != wxNOT_FOUND) {
-		scenes->Delete(item);
-		return;
-	}
-
-	item = sources->FindString(name);
-	if (item != wxNOT_FOUND)
-		sources->Delete(item);
-}
-
-void OBSBasic::SourceAdded(void *data, calldata_t params)
-{
-	OBSBasic *window = (OBSBasic*)data;
-
-	obs_source_t source;
-	calldata_getptr(params, "source", (void**)&source);
-
-	obs_source_type type;
-	obs_source_gettype(source, &type, NULL);
-
-	if (type == SOURCE_SCENE)
-		window->SceneAdded(source);
-}
-
-void OBSBasic::SourceDestroyed(void *data, calldata_t params)
-{
-	OBSBasic *window = (OBSBasic*)data;
-
-	obs_source_t source;
-	calldata_getptr(params, "source", (void**)&source);
-
-	obs_source_type type;
-	obs_source_gettype(source, &type, NULL);
-
-	if (type == SOURCE_SCENE)
-		window->SceneRemoved(source);
-}
-
-bool OBSBasic::Init()
-{
 	if (!obs_startup())
-		return false;
+		throw "Failed to initialize libobs";
 	if (!InitGraphics())
-		return false;
+		throw "Failed to initialize graphics";
+	if (!InitAudio())
+		throw "Failed to initialize audio";
 
 	signal_handler_connect(obs_signalhandler(), "source-add",
 			OBSBasic::SourceAdded, this);
-	signal_handler_connect(obs_signalhandler(), "source-destroy",
-			OBSBasic::SourceDestroyed, this);
-
-	//obs_scene_t scene = obs_scene_create("test scene");
-	//obs_add_source(obs_scene_getsource(scene));
+	signal_handler_connect(obs_signalhandler(), "source-remove",
+			OBSBasic::SourceRemoved, this);
+	signal_handler_connect(obs_signalhandler(), "channel-change",
+			OBSBasic::ChannelChanged, this);
 
 	/* TODO: this is a test */
 	obs_load_module("test-input");
 
-	obs_source_t test = obs_source_create(SOURCE_INPUT, "random", "test",
-			NULL);
-	obs_add_source(test);
-	obs_set_output_source(0, test);
-	/*obs_scene_t scene = obs_scene_create("test2");
-	obs_set_output_source(0, obs_scene_getsource(scene));
-
-	obs_sceneitem_t bla = obs_scene_add(scene, test);
-
-	struct vec2 ddd = {100.0f, 100.0f};
-	obs_sceneitem_setscale(bla, &ddd);
-
-	obs_scene_release(scene);*/
-	obs_source_release(test);
-
-	return true;
+	/* HACK: fixes a qt bug with native widgets with native repaint */
+	ui->previewContainer->repaint();
 }
 
 OBSBasic::~OBSBasic()
 {
+	/* free the lists before shutting down to remove the scene/item
+	 * references */
+	ui->sources->clear();
+	ui->scenes->clear();
 	obs_shutdown();
 }
+
+OBSScene OBSBasic::GetCurrentScene()
+{
+	QListWidgetItem *item = ui->scenes->currentItem();
+	return item ? item->data(Qt::UserRole).value<OBSScene>() : nullptr;
+}
+
+OBSSceneItem OBSBasic::GetCurrentSceneItem()
+{
+	QListWidgetItem *item = ui->sources->currentItem();
+	return item ? item->data(Qt::UserRole).value<OBSSceneItem>() : nullptr;
+}
+
+void OBSBasic::UpdateSources(OBSScene scene)
+{
+	ui->sources->clear();
+
+	obs_scene_enum_items(scene,
+			[] (obs_scene_t scene, obs_sceneitem_t item, void *p)
+			{
+				OBSBasic *window = static_cast<OBSBasic*>(p);
+				window->AddSceneItem(item);
+				return true;
+			}, this);
+}
+
+/* Qt callbacks for invokeMethod */
+
+void OBSBasic::AddScene(OBSSource source)
+{
+	const char *name  = obs_source_getname(source);
+	obs_scene_t scene = obs_scene_fromsource(source);
+
+	QListWidgetItem *item = new QListWidgetItem(QT_UTF8(name));
+	item->setData(Qt::UserRole, QVariant::fromValue(OBSScene(scene)));
+	ui->scenes->addItem(item);
+
+	signal_handler_t handler = obs_source_signalhandler(source);
+	signal_handler_connect(handler, "add", OBSBasic::SceneItemAdded, this);
+	signal_handler_connect(handler, "remove", OBSBasic::SceneItemRemoved,
+			this);
+}
+
+void OBSBasic::RemoveScene(OBSSource source)
+{
+	const char *name = obs_source_getname(source);
+
+	QListWidgetItem *sel = ui->scenes->currentItem();
+	QList<QListWidgetItem*> items = ui->scenes->findItems(QT_UTF8(name),
+			Qt::MatchExactly);
+
+	if (sel != nullptr) {
+		if (items.contains(sel))
+			ui->sources->clear();
+		delete sel;
+	}
+}
+
+void OBSBasic::AddSceneItem(OBSSceneItem item)
+{
+	obs_scene_t  scene  = obs_sceneitem_getscene(item);
+	obs_source_t source = obs_sceneitem_getsource(item);
+	const char   *name  = obs_source_getname(source);
+
+	if (GetCurrentScene() == scene) {
+		QListWidgetItem *listItem = new QListWidgetItem(QT_UTF8(name));
+		listItem->setData(Qt::UserRole,
+				QVariant::fromValue(OBSSceneItem(item)));
+
+		ui->sources->insertItem(0, listItem);
+	}
+
+	sourceSceneRefs[source] = sourceSceneRefs[source] + 1;
+}
+
+void OBSBasic::RemoveSceneItem(OBSSceneItem item)
+{
+	obs_scene_t scene = obs_sceneitem_getscene(item);
+
+	if (GetCurrentScene() == scene) {
+		for (int i = 0; i < ui->sources->count(); i++) {
+			QListWidgetItem *listItem = ui->sources->item(i);
+			QVariant userData = listItem->data(Qt::UserRole);
+
+			if (userData.value<OBSSceneItem>() == item) {
+				delete listItem;
+				break;
+			}
+		}
+	}
+
+	obs_source_t source = obs_sceneitem_getsource(item);
+
+	int scenes = sourceSceneRefs[source] - 1;
+	if (scenes == 0) {
+		obs_source_remove(source);
+		sourceSceneRefs.erase(source);
+	}
+}
+
+void OBSBasic::UpdateSceneSelection(OBSSource source)
+{
+	if (source) {
+		obs_source_type type;
+		obs_source_gettype(source, &type, NULL);
+
+		if (type != SOURCE_SCENE)
+			return;
+
+		obs_scene_t scene = obs_scene_fromsource(source);
+		const char *name = obs_source_getname(source);
+
+		QListWidgetItem *sel = ui->scenes->currentItem();
+		QList<QListWidgetItem*> items =
+			ui->scenes->findItems(QT_UTF8(name), Qt::MatchExactly);
+
+		if (items.contains(sel)) {
+			ui->scenes->setCurrentItem(sel);
+			UpdateSources(scene);
+		}
+	}
+}
+
+/* OBS Callbacks */
+
+void OBSBasic::SceneItemAdded(void *data, calldata_t params)
+{
+	OBSBasic *window = static_cast<OBSBasic*>(data);
+
+	obs_scene_t scene = (obs_scene_t)calldata_ptr(params, "scene");
+	obs_sceneitem_t item = (obs_sceneitem_t)calldata_ptr(params, "item");
+
+	QMetaObject::invokeMethod(window, "AddSceneItem",
+			Q_ARG(OBSSceneItem, OBSSceneItem(item)));
+}
+
+void OBSBasic::SceneItemRemoved(void *data, calldata_t params)
+{
+	OBSBasic *window = static_cast<OBSBasic*>(data);
+
+	obs_scene_t scene = (obs_scene_t)calldata_ptr(params, "scene");
+	obs_sceneitem_t item = (obs_sceneitem_t)calldata_ptr(params, "item");
+
+	QMetaObject::invokeMethod(window, "RemoveSceneItem",
+			Q_ARG(OBSSceneItem, OBSSceneItem(item)));
+}
+
+void OBSBasic::SourceAdded(void *data, calldata_t params)
+{
+	obs_source_t source = (obs_source_t)calldata_ptr(params, "source");
+
+	obs_source_type type;
+	obs_source_gettype(source, &type, NULL);
+
+	if (type == SOURCE_SCENE)
+		QMetaObject::invokeMethod(static_cast<OBSBasic*>(data),
+				"AddScene",
+				Q_ARG(OBSSource, OBSSource(source)));
+}
+
+void OBSBasic::SourceRemoved(void *data, calldata_t params)
+{
+	obs_source_t source = (obs_source_t)calldata_ptr(params, "source");
+
+	obs_source_type type;
+	obs_source_gettype(source, &type, NULL);
+
+	if (type == SOURCE_SCENE)
+		QMetaObject::invokeMethod(static_cast<OBSBasic*>(data),
+				"RemoveScene",
+				Q_ARG(OBSSource, OBSSource(source)));
+}
+
+void OBSBasic::ChannelChanged(void *data, calldata_t params)
+{
+	obs_source_t source = (obs_source_t)calldata_ptr(params, "source");
+	uint32_t channel = calldata_uint32(params, "channel");
+
+	if (channel == 0)
+		QMetaObject::invokeMethod(static_cast<OBSBasic*>(data),
+				"UpdateSceneSelection",
+				Q_ARG(OBSSource, OBSSource(source)));
+}
+
+/* Main class functions */
 
 bool OBSBasic::InitGraphics()
 {
 	struct obs_video_info ovi;
-	wxGetApp().GetConfigFPS(ovi.fps_num, ovi.fps_den);
-	ovi.graphics_module = wxGetApp().GetRenderModule();
+
+	App()->GetConfigFPS(ovi.fps_num, ovi.fps_den);
+
+	ovi.graphics_module = App()->GetRenderModule();
 	ovi.base_width    = (uint32_t)config_get_uint(GetGlobalConfig(),
 			"Video", "BaseCX");
 	ovi.base_height   = (uint32_t)config_get_uint(GetGlobalConfig(),
@@ -132,167 +278,175 @@ bool OBSBasic::InitGraphics()
 			"Video", "OutputCY");
 	ovi.output_format = VIDEO_FORMAT_RGBA;
 	ovi.adapter       = 0;
-	ovi.window        = WxToGSWindow(previewPanel);
+
+//#ifdef __WXGTK__
+	/* Ugly hack for GTK, I'm hoping this can be avoided eventually... */
+//	gtk_widget_realize(previewPanel->GetHandle());
+//#endif
+
+	QTToGSWindow(ui->preview, ovi.window);
 
 	//required to make opengl display stuff on osx(?)
 	ResizePreview(ovi.base_width, ovi.base_height);
-	SendSizeEvent();
 
-	wxSize size = previewPanel->GetClientSize();
-	ovi.window_width  = size.x;
-	ovi.window_height = size.y;
+	QSize size = ui->preview->size();
+	ovi.window_width  = size.width();
+	ovi.window_height = size.height();
 
-	if (!obs_reset_video(&ovi))
-		return false;
-
-	return true;
+	return obs_reset_video(&ovi);
 }
 
-void OBSBasic::OnClose(wxCloseEvent &event)
+bool OBSBasic::InitAudio()
 {
-	wxGetApp().ExitMainLoop();
-	event.Skip();
-}
+	/* TODO: load audio settings from config */
+	struct audio_output_info ai;
+	ai.name = "test";
+	ai.samples_per_sec = 44100;
+	ai.format = AUDIO_FORMAT_16BIT;
+	ai.speakers = SPEAKERS_STEREO;
+	ai.buffer_ms = 700;
 
-void OBSBasic::OnMinimize(wxIconizeEvent &event)
-{
-	event.Skip();
+	return obs_reset_audio(&ai);
 }
 
 void OBSBasic::ResizePreview(uint32_t cx, uint32_t cy)
 {
+	double targetAspect, baseAspect;
+	QSize  targetSize;
+	int x, y;
+
 	/* resize preview panel to fix to the top section of the window */
-	wxSize targetSize   = GetPreviewContainer()->GetSize();
-	double targetAspect = double(targetSize.x) / double(targetSize.y);
-	double baseAspect   = double(cx) / double(cy);
-	wxSize newSize;
+	targetSize   = ui->previewContainer->size();
+	targetAspect = double(targetSize.width()) / double(targetSize.height());
+	baseAspect   = double(cx) / double(cy);
 
-	if (targetAspect > baseAspect)
-		newSize = wxSize(targetSize.y * baseAspect, targetSize.y);
-	else
-		newSize = wxSize(targetSize.x, targetSize.x / baseAspect);
+	if (targetAspect > baseAspect) {
+		cx = targetSize.height() * baseAspect;
+		cy = targetSize.height();
+	} else {
+		cx = targetSize.width();
+		cy = targetSize.width() / baseAspect;
+	}
 
-	GetPreviewPanel()->SetMinSize(newSize);
-}
+	x = targetSize.width() /2 - cx/2;
+	y = targetSize.height()/2 - cy/2;
 
-void OBSBasic::OnSize(wxSizeEvent &event)
-{
-	struct obs_video_info ovi;
-
-	event.Skip();
-
-	if (!obs_get_video_info(&ovi))
-		return;
-
-	ResizePreview(ovi.base_width, ovi.base_height);
-}
-
-void OBSBasic::OnResizePreview(wxSizeEvent &event)
-{
-	event.Skip();
-
-	wxSize newSize = previewPanel->GetClientSize();
+	ui->preview->setGeometry(x, y, cx, cy);
 
 	graphics_t graphics = obs_graphics();
-	if (graphics) {
+	if (graphics && isVisible()) {
 		gs_entercontext(graphics);
-		gs_resize(newSize.x, newSize.y);
+		gs_resize(cx, cy);
 		gs_leavecontext();
 	}
 }
 
-void OBSBasic::fileNewClicked(wxCommandEvent &event)
+void OBSBasic::closeEvent(QCloseEvent *event)
 {
 }
 
-void OBSBasic::fileOpenClicked(wxCommandEvent &event)
+void OBSBasic::changeEvent(QEvent *event)
 {
 }
 
-void OBSBasic::fileSaveClicked(wxCommandEvent &event)
+void OBSBasic::resizeEvent(QResizeEvent *event)
+{
+	struct obs_video_info ovi;
+
+	if (obs_get_video_info(&ovi))
+		ResizePreview(ovi.base_width, ovi.base_height);
+}
+
+void OBSBasic::on_action_New_triggered()
 {
 }
 
-void OBSBasic::fileExitClicked(wxCommandEvent &event)
+void OBSBasic::on_action_Open_triggered()
 {
-	wxGetApp().ExitMainLoop();
 }
 
-void OBSBasic::scenesClicked(wxCommandEvent &event)
+void OBSBasic::on_action_Save_triggered()
 {
-	int sel = scenes->GetSelection();
+}
 
+void OBSBasic::on_scenes_itemChanged(QListWidgetItem *item)
+{
 	obs_source_t source = NULL;
-	if (sel != wxNOT_FOUND) {
-		obs_scene_t scene = (obs_scene_t)scenes->GetClientData(sel);
+
+	if (item) {
+		obs_scene_t scene;
+
+		scene = item->data(Qt::UserRole).value<OBSScene>();
 		source = obs_scene_getsource(scene);
+		UpdateSources(scene);
 	}
 
+	/* TODO: allow transitions */
 	obs_set_output_source(0, source);
 }
 
-void OBSBasic::scenesRDown(wxMouseEvent &event)
+void OBSBasic::on_scenes_customContextMenuRequested(const QPoint &pos)
 {
 }
 
-void OBSBasic::sceneAddClicked(wxCommandEvent &event)
+void OBSBasic::on_actionAddScene_triggered()
 {
 	string name;
-	int ret = NameDialog::AskForName(this,
-			Str("MainWindow.AddSceneDlg.Title"),
-			Str("MainWindow.AddSceneDlg.Text"),
+	bool accepted = NameDialog::AskForName(this,
+			QTStr("MainWindow.AddSceneDlg.Title"),
+			QTStr("MainWindow.AddSceneDlg.Text"),
 			name);
 
-	if (ret == wxID_OK) {
+	if (accepted) {
 		obs_source_t source = obs_get_source_by_name(name.c_str());
 		if (source) {
-			wxMessageBox(WXStr("MainWindow.NameExists.Text"),
-			             WXStr("MainWindow.NameExists.Title"),
-			             wxOK|wxCENTRE, this);
+			QMessageBox::information(this,
+					QTStr("MainWindow.NameExists.Title"),
+					QTStr("MainWindow.NameExists.Text"));
 
 			obs_source_release(source);
-			sceneAddClicked(event);
+			on_actionAddScene_triggered();
 			return;
 		}
 
 		obs_scene_t scene = obs_scene_create(name.c_str());
-		obs_add_source(obs_scene_getsource(scene));
+		source = obs_scene_getsource(scene);
+		obs_add_source(source);
 		obs_scene_release(scene);
+
+		obs_set_output_source(0, source);
 	}
 }
 
-void OBSBasic::sceneRemoveClicked(wxCommandEvent &event)
+void OBSBasic::on_actionRemoveScene_triggered()
 {
-	int sel = scenes->GetSelection();
-	if (sel == wxNOT_FOUND)
+	QListWidgetItem *item = ui->scenes->currentItem();
+	if (!item)
 		return;
 
-	obs_scene_t scene = (obs_scene_t)scenes->GetClientData(sel);
+	QVariant userData = item->data(Qt::UserRole);
+	obs_scene_t scene = userData.value<OBSScene>();
 	obs_source_t source = obs_scene_getsource(scene);
 	obs_source_remove(source);
 }
 
-void OBSBasic::scenePropertiesClicked(wxCommandEvent &event)
+void OBSBasic::on_actionSceneProperties_triggered()
 {
 }
 
-void OBSBasic::sceneUpClicked(wxCommandEvent &event)
+void OBSBasic::on_actionSceneUp_triggered()
 {
 }
 
-void OBSBasic::sceneDownClicked(wxCommandEvent &event)
+void OBSBasic::on_actionSceneDown_triggered()
 {
 }
 
-void OBSBasic::sourcesClicked(wxCommandEvent &event)
+void OBSBasic::on_sources_itemChanged(QListWidgetItem *item)
 {
 }
 
-void OBSBasic::sourcesToggled(wxCommandEvent &event)
-{
-}
-
-void OBSBasic::sourcesRDown(wxMouseEvent &event)
+void OBSBasic::on_sources_customContextMenuRequested(const QPoint &pos)
 {
 }
 
@@ -302,22 +456,21 @@ void OBSBasic::AddSource(obs_scene_t scene, const char *id)
 
 	bool success = false;
 	while (!success) {
-		int ret = NameDialog::AskForName(this,
+		bool accepted = NameDialog::AskForName(this,
 				Str("MainWindow.AddSourceDlg.Title"),
 				Str("MainWindow.AddSourceDlg.Text"),
 				name);
 
-		if (ret == wxID_CANCEL)
+		if (!accepted)
 			break;
 
-		obs_source_t source = obs_get_source_by_name(
-				name.c_str());
+		obs_source_t source = obs_get_source_by_name(name.c_str());
 		if (!source) {
 			success = true;
 		} else {
-			wxMessageBox(WXStr("MainWindow.NameExists.Text"),
-				     WXStr("MainWindow.NameExists.Title"),
-				     wxOK|wxCENTRE, this);
+			QMessageBox::information(this,
+					QTStr("MainWindow.NameExists.Title"),
+					QTStr("MainWindow.NameExists.Text"));
 			obs_source_release(source);
 		}
 	}
@@ -325,73 +478,70 @@ void OBSBasic::AddSource(obs_scene_t scene, const char *id)
 	if (success) {
 		obs_source_t source = obs_source_create(SOURCE_INPUT, id,
 				name.c_str(), NULL);
+
+		sourceSceneRefs[source] = 0;
+
 		obs_add_source(source);
 		obs_sceneitem_t item = obs_scene_add(scene, source);
 		obs_source_release(source);
 	}
 }
 
-void OBSBasic::AddSourcePopup()
+void OBSBasic::AddSourcePopupMenu(const QPoint &pos)
 {
-	int sceneSel = scenes->GetSelection();
-	size_t idx = 0;
+	OBSScene scene = GetCurrentScene();
 	const char *type;
-	vector<const char *> types;
+	bool foundValues = false;
+	size_t idx = 0;
 
-	if (sceneSel == wxNOT_FOUND)
+	if (!scene)
 		return;
 
-	obs_scene_t scene = (obs_scene_t)scenes->GetClientData(sceneSel);
-	obs_scene_addref(scene);
-
-	unique_ptr<wxMenu> popup(new wxMenu());
-	while (obs_enum_input_types(idx, &type)) {
+	QMenu popup;
+	while (obs_enum_input_types(idx++, &type)) {
 		const char *name = obs_source_getdisplayname(SOURCE_INPUT,
-				type, wxGetApp().GetLocale());
+				type, App()->GetLocale());
 
-		types.push_back(type);
-		popup->Append((int)idx+1, wxString(name, wxConvUTF8));
+		QAction *popupItem = new QAction(QT_UTF8(name), this);
+		popupItem->setData(QT_UTF8(type));
+		popup.addAction(popupItem);
 
-		idx++;
+		foundValues = true;
 	}
 
-	if (idx) {
-		int id = WXDoPopupMenu(this, popup.get());
-		if (id != -1)
-			AddSource(scene, types[id-1]);
+	if (foundValues) {
+		QAction *ret = popup.exec(pos);
+		if (ret)
+			AddSource(scene, ret->data().toString().toUtf8());
 	}
-
-	obs_scene_release(scene);
 }
 
-void OBSBasic::sourceAddClicked(wxCommandEvent &event)
+void OBSBasic::on_actionAddSource_triggered()
 {
-	AddSourcePopup();
+	AddSourcePopupMenu(QCursor::pos());
 }
 
-void OBSBasic::sourceRemoveClicked(wxCommandEvent &event)
+void OBSBasic::on_actionRemoveSource_triggered()
 {
+	OBSSceneItem item = GetCurrentSceneItem();
+	if (item)
+		obs_sceneitem_remove(item);
 }
 
-void OBSBasic::sourcePropertiesClicked(wxCommandEvent &event)
-{
-}
-
-void OBSBasic::sourceUpClicked(wxCommandEvent &event)
+void OBSBasic::on_actionSourceProperties_triggered()
 {
 }
 
-void OBSBasic::sourceDownClicked(wxCommandEvent &event)
+void OBSBasic::on_actionSourceUp_triggered()
 {
 }
 
-void OBSBasic::settingsClicked(wxCommandEvent &event)
+void OBSBasic::on_actionSourceDown_triggered()
 {
-	OBSBasicSettings test(this);
-	test.ShowModal();
 }
 
-void OBSBasic::exitClicked(wxCommandEvent &event)
+void OBSBasic::on_settingsButton_clicked()
 {
-	wxGetApp().ExitMainLoop();
+	OBSBasicSettings settings(this);
+	settings.exec();
 }

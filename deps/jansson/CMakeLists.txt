@@ -102,7 +102,7 @@ if (MSVC)
    
 endif()
 
-if (CMAKE_COMPILER_IS_GNUCC OR CMAKE_COMPILER_IS_GNUCXX)
+if (NOT WIN32 AND (CMAKE_COMPILER_IS_GNUCC OR CMAKE_COMPILER_IS_GNUCXX))
    set(CMAKE_C_FLAGS "-fPIC")
 endif()
 
@@ -289,20 +289,20 @@ endif ()
 
 # LIBRARY for linux
 # RUNTIME for windows (when building shared)
-install (TARGETS jansson
-   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-   RUNTIME DESTINATION bin
-)
+#install (TARGETS jansson
+#   ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+#   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+#   RUNTIME DESTINATION bin
+#)
 
-install (FILES
-         ${CMAKE_CURRENT_BINARY_DIR}/include/jansson_config.h
-         ${CMAKE_CURRENT_SOURCE_DIR}/src/jansson.h
-         DESTINATION include)
+#install (FILES
+#         ${CMAKE_CURRENT_BINARY_DIR}/include/jansson_config.h
+#         ${CMAKE_CURRENT_SOURCE_DIR}/src/jansson.h
+#         DESTINATION include)
 
-install (FILES 
-         ${CMAKE_CURRENT_BINARY_DIR}/jansson.pc
-         DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
+#install (FILES 
+#         ${CMAKE_CURRENT_BINARY_DIR}/jansson.pc
+#         DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
 
 # For building Documentation (uses Sphinx)
 OPTION (BUILD_DOCS "Build documentation (uses python-sphinx)." ON)
@@ -415,7 +415,7 @@ if (NOT WITHOUT_TESTS)
    # Test suites.
    #
    if (CMAKE_COMPILER_IS_GNUCC)
-      add_definitions(-Wall -Wextra -Wdeclaration-after-statement -Werror)
+      add_definitions(-Wall -Wextra -Wdeclaration-after-statement)
    endif ()
 
    set(api_tests

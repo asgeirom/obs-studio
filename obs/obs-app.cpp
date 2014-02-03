@@ -16,26 +16,23 @@
 ******************************************************************************/
 
 #include <sstream>
-
 #include <util/bmem.h>
 #include <util/dstr.h>
 #include <util/platform.h>
-
 #include <obs.hpp>
 
+#include <QProxyStyle>
+
+#include "qt-wrappers.hpp"
 #include "obs-app.hpp"
 #include "window-basic-main.hpp"
-#include "wx-wrappers.hpp"
 #include "platform.hpp"
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 using namespace std;
-
-IMPLEMENT_APP(OBSApp);
-
-OBSAppBase::~OBSAppBase()
-{
-	blog(LOG_INFO, "Number of memory leaks: %llu", bnum_allocs());
-}
 
 static void do_log(enum log_type type, const char *msg, va_list args)
 {
@@ -46,7 +43,7 @@ static void do_log(enum log_type type, const char *msg, va_list args)
 	OutputDebugStringA(bla);
 	OutputDebugStringA("\n");
 
-	if (type >= LOG_WARNING)
+	if (type >= LOG_WARNING && IsDebuggerPresent())
 		__debugbreak();
 #else
 	vprintf(msg, args);
@@ -90,7 +87,7 @@ bool OBSApp::InitGlobalConfigDefaults()
 	config_set_default_uint(globalConfig, "Video", "OutputCX", cx);
 	config_set_default_uint(globalConfig, "Video", "OutputCY", cy);
 
-	config_set_default_string(globalConfig, "Video", "FPSType", "Common");
+	config_set_default_uint(globalConfig, "Video", "FPSType", 0);
 	config_set_default_string(globalConfig, "Video", "FPSCommon", "30");
 	config_set_default_uint(globalConfig, "Video", "FPSInt", 30);
 	config_set_default_uint(globalConfig, "Video", "FPSNum", 30);
@@ -170,38 +167,19 @@ bool OBSApp::InitLocale()
 	return true;
 }
 
-bool OBSApp::InitOBSBasic()
+OBSApp::OBSApp(int &argc, char **argv)
+	: QApplication(argc, argv)
 {
-	OBSBasic *obsBasic = new OBSBasic();
-	obsBasic->Show();
-
-	mainWindow = obsBasic;
-	return obsBasic->Init();
-}
-
-bool OBSApp::OnInit()
-{
-	base_set_log_handler(do_log);
-
-	if (!wxApp::OnInit())
-		return false;
-	wxInitAllImageHandlers();
-
+	if (!InitApplicationBundle())
+		throw "Failed to initialize application bundle";
 	if (!MakeUserDirs())
-		return false;
+		throw "Failed to created required user directories";
 	if (!InitGlobalConfig())
-		return false;
+		throw "Failed to initialize global config";
 	if (!InitLocale())
-		return false;
-	if (!InitOBSBasic())
-		return false;
+		throw "Failed to load locale";
 
-	return true;
-}
-
-int OBSApp::OnExit()
-{
-	return wxApp::OnExit();
+	mainWindow = move(unique_ptr<OBSBasic>(new OBSBasic()));
 }
 
 void OBSApp::GetFPSCommon(uint32_t &num, uint32_t &den) const
@@ -255,13 +233,13 @@ void OBSApp::GetFPSNanoseconds(uint32_t &num, uint32_t &den) const
 
 void OBSApp::GetConfigFPS(uint32_t &num, uint32_t &den) const
 {
-	const char *type = config_get_string(globalConfig, "Video", "FPSType");
+	uint32_t type = config_get_uint(globalConfig, "Video", "FPSType");
 
-	if (astrcmpi(type, "Integer") == 0)
+	if (type == 1) //"Integer"
 		GetFPSInteger(num, den);
-	else if (astrcmpi(type, "Fraction") == 0)
+	else if (type == 2) //"Fraction"
 		GetFPSFraction(num, den);
-	else if (astrcmpi(type, "Nanoseconds") == 0)
+	else if (false) //"Nanoseconds", currently not implemented
 		GetFPSNanoseconds(num, den);
 	else
 		GetFPSCommon(num, den);
@@ -276,4 +254,42 @@ const char *OBSApp::GetRenderModule() const
 		return "libobs-d3d11";
 	else
 		return "libobs-opengl";
+}
+
+void OBSApp::OBSInit()
+{
+	mainWindow->OBSInit();
+}
+
+struct NoFocusFrameStyle : QProxyStyle
+{
+	void drawControl(ControlElement element, const QStyleOption *option,
+			QPainter *painter, const QWidget *widget=nullptr)
+		const override
+	{
+		if (element == CE_FocusFrame)
+			return;
+
+		QProxyStyle::drawControl(element, option, painter, widget);
+	}
+};
+
+int main(int argc, char *argv[])
+{
+	int ret = -1;
+	QCoreApplication::addLibraryPath(".");
+	base_set_log_handler(do_log);
+
+	try {
+		OBSApp program(argc, argv);
+		program.setStyle(new NoFocusFrameStyle);
+		program.OBSInit();
+		ret = program.exec();
+
+	} catch (const char *error) {
+		blog(LOG_ERROR, "%s", error);
+	}
+
+	blog(LOG_INFO, "Number of memory leaks: %llu", bnum_allocs());
+	return ret;
 }
